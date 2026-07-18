@@ -6,8 +6,13 @@ export type RunLifecycleEvent = {
   path?: AnswerPath;
 };
 
+export const POST_ANSWER_LEASE_BUDGET_MS = 10_000;
+export const SNAPSHOT_REQUEST_TIMEOUT_MS = 12_000;
+export const COMMIT_REQUEST_TIMEOUT_MS = 15_000;
+
 export const SSE_EVENT_TYPES = [
   "input.ack",
+  "draft.settled",
   "trigger.decision",
   "trigger.error",
   "retrieval.started",
@@ -51,4 +56,8 @@ export function isUserVisibleRunComplete(
     return completedPaths.has("naive") && completedPaths.has("stream");
   }
   return completedPaths.has(mode);
+}
+
+export function isRunTransportTerminal(event: RunLifecycleEvent): boolean {
+  return event.type === "run.completed" || event.type === "run.error";
 }

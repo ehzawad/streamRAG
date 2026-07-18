@@ -15,9 +15,9 @@ from typing import Any
 import numpy as np
 from qdrant_client import AsyncQdrantClient, QdrantClient, models
 
+from app import fingerprints
 from app.config import Settings
 from app.data.index_state import IndexStateRepository
-from app.fingerprints import index_source_sha256
 from app.models import Chunk, Hit, SearchResult
 from app.rag.embeddings import Embedder
 
@@ -34,6 +34,7 @@ class IndexSyncReport:
     embedding_tokens: int
     index_version: int
     index_checksum: str
+    index_source_sha256: str
     elapsed_ms: float
 
 
@@ -42,6 +43,10 @@ class _CachedSearchPayload:
     """Reusable search data without metrics belonging to the original call."""
 
     hits: tuple[Hit, ...]
+
+
+class IndexNotReadyError(RuntimeError):
+    """Index access was rejected because durable or physical state is not current."""
 
 
 class QdrantVectorStore:
@@ -82,7 +87,9 @@ class QdrantVectorStore:
         ] = OrderedDict()
         self._cache_lock = asyncio.Lock()
         self._version_lock = asyncio.Lock()
+        self._sync_lock = asyncio.Lock()
         self._index_version: int | None = None
+        self._index_ready: bool | None = None
 
     async def _client_call(self, method: str, /, **kwargs: Any) -> Any:
         call = partial(getattr(self.client, method), **kwargs)
@@ -103,6 +110,7 @@ class QdrantVectorStore:
     async def setup(self) -> None:
         await self.state.setup()
         self._index_version = await self.state.version(self.settings.qdrant_collection)
+        self._index_ready = await self.state.ready(self.settings.qdrant_collection)
         if not await self._client_call(
             "collection_exists",
             collection_name=self.settings.qdrant_collection,
@@ -127,6 +135,7 @@ class QdrantVectorStore:
             "chunk": asdict(chunk),
             "embedding_dimensions": self.settings.embedding_dimensions,
             "embedding_model": self.embedder.model,
+            "index_pipeline_version": fingerprints.INDEX_PIPELINE_VERSION,
         }
         return hashlib.sha256(
             json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -168,7 +177,54 @@ class QdrantVectorStore:
             if offset is None:
                 return existing
 
-    async def sync(self, chunks: list[Chunk], batch_size: int = 64) -> IndexSyncReport:
+    async def index_ready(self) -> bool:
+        if self._index_ready is not None:
+            return self._index_ready
+        async with self._version_lock:
+            if self._index_ready is None:
+                self._index_ready = await self.state.ready(self.settings.qdrant_collection)
+            return self._index_ready
+
+    async def assert_ready(self, expected_index_source: str) -> None:
+        """Fail closed unless durable metadata and physical points match the corpus."""
+        metadata = await self.state.metadata(self.settings.qdrant_collection)
+        collection = await self.get_collection()
+        desired_chunks = int(metadata["desired_chunks"] or 0)
+        points_count = int(collection.points_count or 0)
+        async with self._version_lock:
+            ready = (
+                self._index_ready is True
+                and metadata["ready"] is True
+                and self._index_version == metadata["version"]
+                and metadata["index_source_sha256"] == expected_index_source
+                and desired_chunks > 0
+                and points_count == desired_chunks
+            )
+        if not ready:
+            raise IndexNotReadyError(
+                "index is absent, incomplete, or stale for the current corpus; run data sync"
+            )
+
+    async def sync(
+        self,
+        chunks: list[Chunk],
+        *,
+        index_source: str,
+        batch_size: int = 64,
+    ) -> IndexSyncReport:
+        if batch_size <= 0:
+            raise ValueError("sync batch size must be positive")
+        if not index_source:
+            raise ValueError("index source fingerprint is required")
+        async with self._sync_lock:
+            return await self._sync(chunks, batch_size, index_source)
+
+    async def _sync(
+        self,
+        chunks: list[Chunk],
+        batch_size: int,
+        index_source: str,
+    ) -> IndexSyncReport:
         started = time.perf_counter()
         desired = {chunk.chunk_id: chunk for chunk in chunks}
         index_checksum = self._desired_index_checksum(desired)
@@ -181,6 +237,11 @@ class QdrantVectorStore:
         ]
         removed = sorted(set(existing) - set(desired))
         embedding_tokens = 0
+        async with self._version_lock:
+            self._index_ready = False
+        await self.state.mark_sync_started(self.settings.qdrant_collection)
+        async with self._cache_lock:
+            self._search_cache.clear()
         for start in range(0, len(changed), batch_size):
             batch = changed[start : start + batch_size]
             vectors, tokens = await self.embedder.embed(
@@ -218,15 +279,13 @@ class QdrantVectorStore:
         current_version = await self.state.record_sync(
             self.settings.qdrant_collection,
             index_checksum=index_checksum,
-            index_source_sha256=index_source_sha256(self.settings),
+            index_source_sha256=index_source,
             desired_chunks=len(desired),
             content_changed=content_changed,
         )
         async with self._version_lock:
             self._index_version = current_version
-        if content_changed:
-            async with self._cache_lock:
-                self._search_cache.clear()
+            self._index_ready = True
         return IndexSyncReport(
             collection=self.settings.qdrant_collection,
             desired_chunks=len(desired),
@@ -236,6 +295,7 @@ class QdrantVectorStore:
             embedding_tokens=embedding_tokens,
             index_version=current_version,
             index_checksum=index_checksum,
+            index_source_sha256=index_source,
             elapsed_ms=(time.perf_counter() - started) * 1000,
         )
 
@@ -274,9 +334,7 @@ class QdrantVectorStore:
             return self._index_version
         async with self._version_lock:
             if self._index_version is None:
-                self._index_version = await self.state.version(
-                    self.settings.qdrant_collection
-                )
+                self._index_version = await self.state.version(self.settings.qdrant_collection)
             return self._index_version
 
     async def search(
@@ -287,6 +345,10 @@ class QdrantVectorStore:
         cache_scope: str = "default",
     ) -> SearchResult:
         started = time.perf_counter()
+        if not await self.index_ready():
+            raise IndexNotReadyError(
+                f"index {self.settings.qdrant_collection!r} is not ready; run data sync"
+            )
         query = query.strip()
         if not query:
             raise ValueError("retrieval query is empty")
@@ -295,18 +357,21 @@ class QdrantVectorStore:
         version = await self._current_index_version()
         cache_key = (cache_scope, version, self._normalize_query(query), limit)
         now = time.monotonic()
-        async with self._cache_lock:
-            cached = self._search_cache.get(cache_key)
-            if cached and now - cached[0] <= self.settings.search_cache_ttl_s:
-                self._search_cache.move_to_end(cache_key)
-                return SearchResult(
-                    query=query,
-                    hits=list(cached[1].hits),
-                    embedding_tokens=0,
-                    elapsed_ms=(time.perf_counter() - started) * 1000,
-                    cache_scope=cache_scope,
-                    cache_hit=True,
-                )
+        async with self._version_lock:
+            if not self._index_ready or self._index_version != version:
+                raise IndexNotReadyError("index changed while search was starting")
+            async with self._cache_lock:
+                cached = self._search_cache.get(cache_key)
+                if cached and now - cached[0] <= self.settings.search_cache_ttl_s:
+                    self._search_cache.move_to_end(cache_key)
+                    return SearchResult(
+                        query=query,
+                        hits=list(cached[1].hits),
+                        embedding_tokens=0,
+                        elapsed_ms=(time.perf_counter() - started) * 1000,
+                        cache_scope=cache_scope,
+                        cache_hit=True,
+                    )
         query_vector_started = time.perf_counter()
         vector, tokens = await self._query_vector(query, cache_scope)
         query_vector_ms = (time.perf_counter() - query_vector_started) * 1000
@@ -350,14 +415,17 @@ class QdrantVectorStore:
             query_vector_ms=query_vector_ms,
             ann_ms=ann_ms,
         )
-        async with self._cache_lock:
-            self._search_cache[cache_key] = (
-                time.monotonic(),
-                _CachedSearchPayload(hits=tuple(hits)),
-            )
-            self._search_cache.move_to_end(cache_key)
-            while len(self._search_cache) > self.settings.search_cache_size:
-                self._search_cache.popitem(last=False)
+        async with self._version_lock:
+            if not self._index_ready or self._index_version != version:
+                raise IndexNotReadyError("index changed while search was in progress")
+            async with self._cache_lock:
+                self._search_cache[cache_key] = (
+                    time.monotonic(),
+                    _CachedSearchPayload(hits=tuple(hits)),
+                )
+                self._search_cache.move_to_end(cache_key)
+                while len(self._search_cache) > self.settings.search_cache_size:
+                    self._search_cache.popitem(last=False)
         return result
 
     async def close(self) -> None:

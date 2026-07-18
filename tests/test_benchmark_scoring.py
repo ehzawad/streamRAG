@@ -65,6 +65,25 @@ def test_expected_hit_handles_negation_boundaries_and_unrelated_caveats() -> Non
     )
 
 
+def test_expected_hit_rejects_the_opposite_queried_relation() -> None:
+    gold = {"answer": "Studio A", "alt_answers": []}
+    question = "Which film had the smaller opening weekend?"
+
+    assert not scorer.expected_hit("Studio A had the larger opening.", gold, question)
+    assert not scorer.expected_hit("Studio A did not have the smaller opening.", gold, question)
+    assert not scorer.expected_hit(
+        "Studio A had an opening score that was not smaller than Studio B.",
+        gold,
+        question,
+    )
+    assert scorer.expected_hit(
+        "Studio A had the smaller opening than Studio B's larger opening.",
+        gold,
+        question,
+    )
+    assert scorer.expected_hit("Studio A.", gold, question)
+
+
 def test_false_premise_rejects_negated_abstention_and_direct_guess() -> None:
     gold = {"answer": "invalid question", "alt_answers": []}
     accepted = (
@@ -117,6 +136,32 @@ def test_path_summary_separates_false_premise_and_answerable_abstentions() -> No
 
     assert summary["false_premise_rejection_rate"] == 1.0
     assert summary["answerable_abstention_rate"] == 1.0
+
+
+def test_support_requires_an_exact_retrieved_chunk_citation() -> None:
+    gold = {
+        "answer": "Gold",
+        "alt_answers": [],
+        "supporting_doc_ids": ["doc-1"],
+    }
+    base = {
+        "id": "q-1",
+        "query": "What is the answer?",
+        "repetition": 1,
+        "path": "naive",
+        "sources": [{"chunk_id": "doc-1::c0001"}],
+    }
+
+    hallucinated = scorer.annotate([{**base, "answer": "Gold [doc-1::c9999]."}], {"q-1": gold})[0]
+    valid = scorer.annotate([{**base, "answer": "Gold [doc-1::c0001]."}], {"q-1": gold})[0]
+
+    assert hallucinated["has_citation_marker"] is True
+    assert hallucinated["has_valid_citation"] is False
+    assert hallucinated["cites_supporting_doc"] is False
+    assert hallucinated["supported_expected_hit"] is False
+    assert valid["has_valid_citation"] is True
+    assert valid["cites_supporting_doc"] is True
+    assert valid["supported_expected_hit"] is True
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -204,7 +249,19 @@ def valid_scoring_fixture(tmp_path: Path) -> dict[str, Any]:
     for repetition in range(1, 2):
         for query in selected_queries:
             for path in ("naive", "stream"):
-                schedules = [] if path == "naive" else [{"transport_status": "aborted_at_commit"}]
+                schedules = (
+                    []
+                    if path == "naive"
+                    else [
+                        {
+                            "revision": 1,
+                            "transport_status": "completed",
+                            "planned_offset_ms": 1200.0,
+                            "character_count": len(query["query"].strip()),
+                            "is_final": True,
+                        }
+                    ]
+                )
                 rows.append(
                     {
                         **query,
@@ -213,13 +270,39 @@ def valid_scoring_fixture(tmp_path: Path) -> dict[str, Any]:
                         "service_base_url": path_urls[path],
                         "session_scope": (f"bench-{run_tag}-{repetition}-{query['id']}-{path}"),
                         "typing": {
-                            "planned_commit_offset_ms": 1000.0,
-                            "actual_commit_offset_ms": 1005.0,
+                            "words_per_minute": 70.0,
+                            "snapshot_interval_ms": 400,
+                            "settled_draft_delay_ms": 500,
+                            "typing_duration_ms": 1000.0,
+                            "post_typing_dwell_ms": 5000.0,
+                            "simulated_duration_ms": 6000.0,
+                            "planned_commit_offset_ms": 6000.0,
+                            "actual_commit_offset_ms": 6005.0,
                             "commit_drift_ms": 5.0,
                             "max_allowed_drift_ms": 100.0,
                             "drift_within_tolerance": True,
                         },
                         "snapshot_schedule": schedules,
+                        "settled_final_snapshot_observed": path == "stream",
+                        "trace_events": (
+                            [
+                                {
+                                    "type": "draft.settled",
+                                    "revision": 1,
+                                    "query": query["query"],
+                                    "state": "starting",
+                                    "benchmark_offset_from_commit_ms": -4000.0,
+                                },
+                                {
+                                    "type": "retrieval.started",
+                                    "revision": 1,
+                                    "query": query["query"],
+                                    "benchmark_offset_from_commit_ms": -4000.0,
+                                },
+                            ]
+                            if path == "stream"
+                            else []
+                        ),
                         "snapshot_transport_errors": 0,
                         "turn_cleanup": {"turn_cleanup_status": "not_required"},
                     }
@@ -228,9 +311,16 @@ def valid_scoring_fixture(tmp_path: Path) -> dict[str, Any]:
     write_jsonl(predictions, rows)
 
     identity_fields = {
+        "approval_status",
+        "backend_source_sha256",
+        "config_hash",
+        "current_index_source_sha256",
+        "dataset_checksums_valid",
+        "dataset_sha256",
         "model",
         "embedding_model",
         "reasoning_effort",
+        "settled_draft_delay_ms",
         "trigger_reasoning_effort",
         "summary_reasoning_effort",
         "service_tier",
@@ -240,23 +330,38 @@ def valid_scoring_fixture(tmp_path: Path) -> dict[str, Any]:
         "freeze_id",
         "documents_sha256",
         "index_checksum",
+        "index_matches_current_corpus",
+        "index_metadata_ready",
+        "index_source_sha256",
+        "index_version",
+        "indexed_chunks",
+        "indexed_desired_chunks",
     }
     common_status = {field: f"fixture-{field}" for field in identity_fields}
     common_status.update(
         {
             "approval_status": "approved_frozen",
+            "backend_source_sha256": scorer.backend_source_sha256(ROOT),
+            "config_hash": scorer.config_sha256(scorer.settings),
+            "current_index_source_sha256": "fixture-index-source",
+            "dataset_checksums_valid": True,
+            "dataset_sha256": "fixture-dataset",
             "dataset_checksum": evaluation_manifest_sha256,
             "serving_dataset_checksum": scorer.sha256_file(serving_manifest),
             "freeze_id": freeze_id,
             "documents_sha256": scorer.sha256_file(documents),
+            "index_matches_current_corpus": True,
+            "index_metadata_ready": True,
+            "index_source_sha256": "fixture-index-source",
+            "index_version": 1,
+            "indexed_chunks": 1,
+            "indexed_desired_chunks": 1,
         }
     )
     manifest = {
         "schema_version": 4,
         "run_tag": run_tag,
-        "queries": Path(
-            os.path.relpath(inference_queries, start=results)
-        ).as_posix(),
+        "queries": Path(os.path.relpath(inference_queries, start=results)).as_posix(),
         "queries_sha256": scorer.sha256_file(inference_queries),
         "query_ids": [query["id"] for query in selected_queries],
         "query_count": 10,
@@ -287,9 +392,14 @@ def valid_scoring_fixture(tmp_path: Path) -> dict[str, Any]:
         "warmup_outputs_completed": 0,
         "warmup_failures": 0,
         "repetitions": 1,
+        "words_per_minute": 70.0,
+        "post_typing_dwell_ms": 5000.0,
+        "settled_draft_delay_ms": 500,
+        "case_deadline_s": 45.0,
         "max_typing_drift_ms": 100.0,
         "smoke_non_reportable": False,
         "path_urls": path_urls,
+        "backend_instance_ids": {"naive": "naive", "stream": "stream"},
         "distinct_backend_instances": True,
         "compared_status_fields": sorted(identity_fields),
         "data_status": {
@@ -302,6 +412,11 @@ def valid_scoring_fixture(tmp_path: Path) -> dict[str, Any]:
             "required_total_path_runs": 20,
             "required_warmup_repetitions": 0,
             "required_measured_repetitions": 1,
+            "required_words_per_minute": 70.0,
+            "required_post_typing_dwell_ms": 5000.0,
+            "required_settled_draft_delay_ms": 500,
+            "required_max_typing_drift_ms": 100.0,
+            "required_case_deadline_s": 45.0,
         },
         "warmup_gate": {"status": "complete"},
         "timing_drift_gate": {"status": "complete", "observations": 20, "violations": 0},
@@ -525,12 +640,179 @@ def test_offline_scorer_rejects_non_preregistered_repetition_schedule(
     assert any("no warm-up and one measured repetition" in issue for issue in integrity["issues"])
 
 
+def test_offline_scorer_rejects_tampered_typing_dwell_even_with_updated_hash(
+    tmp_path: Path,
+) -> None:
+    fixture = valid_scoring_fixture(tmp_path)
+    rows = copy.deepcopy(fixture["rows"])
+    rows[0]["typing"]["post_typing_dwell_ms"] = 0.0
+    write_jsonl(fixture["predictions"], rows)
+    manifest = fixture["manifest_data"]
+    manifest["predictions_sha256"] = scorer.sha256_file(fixture["predictions"])
+    fixture["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+    integrity = scorer.validate_run_integrity(
+        rows,
+        fixture["predictions"],
+        fixture["manifest"],
+        fixture["gold"],
+        fixture["evaluation_manifest"],
+    )
+
+    assert integrity["status"] == "missing_or_incomplete"
+    assert any("typing/dwell contract" in issue for issue in integrity["issues"])
+
+
+def test_offline_scorer_rejects_aborted_exact_dwell_snapshot_even_with_updated_hash(
+    tmp_path: Path,
+) -> None:
+    fixture = valid_scoring_fixture(tmp_path)
+    rows = copy.deepcopy(fixture["rows"])
+    stream_row = next(row for row in rows if row["path"] == "stream")
+    exact_snapshot = next(
+        schedule for schedule in stream_row["snapshot_schedule"] if schedule["is_final"] is True
+    )
+    exact_snapshot["transport_status"] = "aborted_at_commit"
+    write_jsonl(fixture["predictions"], rows)
+    manifest = fixture["manifest_data"]
+    manifest["predictions_sha256"] = scorer.sha256_file(fixture["predictions"])
+    fixture["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+    integrity = scorer.validate_run_integrity(
+        rows,
+        fixture["predictions"],
+        fixture["manifest"],
+        fixture["gold"],
+        fixture["evaluation_manifest"],
+    )
+
+    assert integrity["status"] == "missing_or_incomplete"
+    assert any("path-specific snapshot scheduling" in issue for issue in integrity["issues"])
+
+
+def test_offline_scorer_rejects_full_draft_not_processed_during_dwell(
+    tmp_path: Path,
+) -> None:
+    fixture = valid_scoring_fixture(tmp_path)
+    rows = copy.deepcopy(fixture["rows"])
+    stream_row = next(row for row in rows if row["path"] == "stream")
+    stream_row["trace_events"] = []
+    stream_row["settled_final_snapshot_observed"] = False
+    write_jsonl(fixture["predictions"], rows)
+    manifest = fixture["manifest_data"]
+    manifest["predictions_sha256"] = scorer.sha256_file(fixture["predictions"])
+    fixture["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+    integrity = scorer.validate_run_integrity(
+        rows,
+        fixture["predictions"],
+        fixture["manifest"],
+        fixture["gold"],
+        fixture["evaluation_manifest"],
+    )
+
+    assert integrity["status"] == "missing_or_incomplete"
+    assert any("path-specific snapshot scheduling" in issue for issue in integrity["issues"])
+
+
+def test_offline_scorer_rejects_forged_distinct_backend_identity(tmp_path: Path) -> None:
+    fixture = valid_scoring_fixture(tmp_path)
+    manifest = fixture["manifest_data"]
+    manifest["backend_instance_ids"]["stream"] = "naive"
+    fixture["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+    integrity = scorer.validate_run_integrity(
+        fixture["rows"],
+        fixture["predictions"],
+        fixture["manifest"],
+        fixture["gold"],
+        fixture["evaluation_manifest"],
+    )
+
+    assert integrity["status"] == "missing_or_incomplete"
+    assert any("distinct backend instances" in issue for issue in integrity["issues"])
+
+
+def test_offline_scorer_rejects_shared_stale_backend_identities(tmp_path: Path) -> None:
+    cases = (
+        ("backend_source_sha256", "backend source does not match"),
+        ("config_hash", "runtime configuration does not match"),
+    )
+    for field, expected_issue in cases:
+        fixture = valid_scoring_fixture(tmp_path / field)
+        manifest = fixture["manifest_data"]
+        for path in ("naive", "stream"):
+            manifest["data_status"][path][field] = "0" * 64
+        fixture["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+        integrity = scorer.validate_run_integrity(
+            fixture["rows"],
+            fixture["predictions"],
+            fixture["manifest"],
+            fixture["gold"],
+            fixture["evaluation_manifest"],
+        )
+
+        assert integrity["status"] == "missing_or_incomplete"
+        assert any(expected_issue in issue for issue in integrity["issues"])
+
+
+def test_offline_scorer_rejects_a_shared_stale_index_identity(tmp_path: Path) -> None:
+    fixture = valid_scoring_fixture(tmp_path)
+    manifest = fixture["manifest_data"]
+    for path in ("naive", "stream"):
+        manifest["data_status"][path]["index_source_sha256"] = "stale"
+    fixture["manifest"].write_text(json.dumps(manifest), encoding="utf-8")
+
+    integrity = scorer.validate_run_integrity(
+        fixture["rows"],
+        fixture["predictions"],
+        fixture["manifest"],
+        fixture["gold"],
+        fixture["evaluation_manifest"],
+    )
+
+    assert integrity["status"] == "missing_or_incomplete"
+    assert any("complete current index" in issue for issue in integrity["issues"])
+
+
 def test_automatic_completeness_does_not_require_manual_adjudication() -> None:
     assert scorer.automatic_completeness(
         failures=0,
-        accounting_incomplete=0,
         run_integrity={"status": "complete"},
     )
+
+
+def test_automatic_completeness_does_not_require_complete_cost_telemetry() -> None:
+    summary = scorer.summarize(
+        [
+            {
+                "id": "q-1",
+                "query": "Which value?",
+                "repetition": 1,
+                "path": "stream",
+                "answer": "Gold",
+                "sources": [],
+                "timing": {
+                    "submit_to_first_token_ms": 1.0,
+                    "total_response_ms": 2.0,
+                    "retrieval_ms": 0.5,
+                },
+                "usage": {"calls": 1, "input_tokens": 1, "output_tokens": 1},
+                "estimated_cost_usd": {"total": 0.01, "accounting_complete": False},
+                "controller": {"calls": 1},
+                "retrieval": {"calls": 1},
+                "diagnostics": {},
+                "tool_traces": [],
+                "post_commit_wall_ms": 2.0,
+            }
+        ],
+        {"q-1": {"answer": "Gold", "alt_answers": []}},
+        run_integrity={"status": "complete", "issues": []},
+    )
+
+    assert summary["final_completeness_gate"]["status"] == "complete"
+    assert summary["cost_accounting_gate"]["status"] == "lower_bound_non_final"
 
 
 def test_manual_adjudication_is_an_optional_extension(tmp_path: Path) -> None:
@@ -552,6 +834,7 @@ def test_adjudication_gate_binds_path_hash_and_rejects_extra_keys(tmp_path: Path
             "path": row["path"],
             "label": "perfect",
             "reviewer": "reviewer-1",
+            "prediction_sha256": scorer.prediction_sha256(row),
         }
         for row in rows
     ]
@@ -572,7 +855,36 @@ def test_adjudication_gate_binds_path_hash_and_rejects_extra_keys(tmp_path: Path
         "path": "naive",
         "label": "perfect",
         "reviewer": "reviewer-1",
+        "prediction_sha256": "0" * 64,
     }
     rejected = scorer.validate_adjudication_integrity(rows, extra, adjudications_path)
     assert rejected["status"] == "missing_or_incomplete"
     assert rejected["extra_keys"] == 1
+
+
+def test_adjudication_gate_rejects_a_label_for_an_old_prediction(tmp_path: Path) -> None:
+    fixture = valid_scoring_fixture(tmp_path)
+    row = fixture["rows"][0]
+    key = (row["id"], row["repetition"], row["path"])
+    adjudications = {
+        key: {
+            "id": row["id"],
+            "repetition": row["repetition"],
+            "path": row["path"],
+            "label": "perfect",
+            "reviewer": "reviewer-1",
+            "prediction_sha256": scorer.prediction_sha256(row),
+        }
+    }
+    changed = [{**row, "answer": "A different output"}, *fixture["rows"][1:]]
+
+    gate = scorer.validate_adjudication_integrity(
+        changed,
+        adjudications,
+        tmp_path / "adjudications.jsonl",
+    )
+    annotated = scorer.annotate(changed[:1], {}, adjudications)
+
+    assert gate["status"] == "missing_or_incomplete"
+    assert gate["mismatched_prediction_hashes"] == 1
+    assert annotated[0]["manual_adjudication"] is None

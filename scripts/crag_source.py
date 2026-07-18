@@ -80,10 +80,7 @@ def evidence_covered(record: dict[str, Any], pages: list[dict[str, Any]]) -> boo
     haystack = normalize_text(" ".join(clean_page(page) for page in pages))
     answers = [str(record.get("answer") or "")]
     answers.extend(str(item) for item in (record.get("alt_ans") or []))
-    return any(
-        answer_is_crisp(answer) and normalize_text(answer) in haystack
-        for answer in answers
-    )
+    return any(answer_is_crisp(answer) and normalize_text(answer) in haystack for answer in answers)
 
 
 def read_records(path: Path) -> Iterable[dict[str, Any]]:

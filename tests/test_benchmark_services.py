@@ -136,9 +136,10 @@ def test_development_mode_accepts_only_checksummed_dev_candidate(tmp_path: Path)
 
     assert contract["approval_status"] == "candidate_pending_human_review"
     assert contract["bundle_role"] == "development_candidate"
-    assert contract["serving_dataset_checksum"] == hashlib.sha256(
-        (dataset_dir / "checksums.sha256").read_bytes()
-    ).hexdigest()
+    assert (
+        contract["serving_dataset_checksum"]
+        == hashlib.sha256((dataset_dir / "checksums.sha256").read_bytes()).hexdigest()
+    )
 
 
 def test_development_mode_refuses_approved_or_non_dev_inputs(tmp_path: Path) -> None:
@@ -226,6 +227,7 @@ def test_status_validation_rejects_partial_or_stale_index() -> None:
             "indexed_chunks",
             "indexed_desired_chunks",
             "dataset_checksums_valid",
+            "index_metadata_ready",
             "index_matches_current_corpus",
             "index_source_sha256",
             "current_index_source_sha256",
@@ -237,6 +239,7 @@ def test_status_validation_rejects_partial_or_stale_index() -> None:
             "indexed_chunks": 10,
             "indexed_desired_chunks": 10,
             "dataset_checksums_valid": True,
+            "index_metadata_ready": True,
             "index_matches_current_corpus": True,
             "index_source_sha256": "source",
             "current_index_source_sha256": "source",
@@ -244,6 +247,11 @@ def test_status_validation_rejects_partial_or_stale_index() -> None:
     )
     validate_status(status, "fixture", require_index=True)
 
+    status["index_metadata_ready"] = False
+    with pytest.raises(RuntimeError, match="not finalized"):
+        validate_status(status, "fixture", require_index=True)
+
+    status["index_metadata_ready"] = True
     status["indexed_desired_chunks"] = 11
     with pytest.raises(RuntimeError, match="desired chunks"):
         validate_status(status, "fixture", require_index=True)

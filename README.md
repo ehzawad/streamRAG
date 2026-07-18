@@ -15,21 +15,30 @@ post-trained trigger or speech stack.
 
 ## What is compared
 
-- **Naive RAG:** Send commits the complete query; only then does query planning,
-  retrieval, and grounded answer generation begin.
-- **Typed StreamRAG:** while the user types, the browser sends cumulative dirty
-  text snapshots. At an eligible boundary with a meaningful completed prefix, the
-  deterministic scheduler may launch one raw retrieval concurrently with a bounded
-  low-reasoning model controller. The model validates, refines, or rejects that
-  candidate. Raw results remain provisional: the complete-input commit gate must
-  reuse and revalidate, finish compatible in-flight work, or replace them. Only
-  commit-validated evidence can reach the answer, and final answer generation never
-  starts before Send.
+- **Naive RAG:** Send commits the complete query; only then does retrieval with
+  that exact immutable text and grounded answer generation begin.
+- **Typed StreamRAG:** while the user types, the browser samples every 400 ms but
+  sends only changed cumulative drafts. Evolving prefixes use the bounded low-
+  reasoning model trigger. After any delivered draft remains unchanged for the
+  locked 500 ms server interval, the server may retrieve with that exact full
+  draft. Raw results remain provisional. HTTP Send acceptance is immediate and
+  backgrounded. The answer path cancels an unfinished model decision or mismatched
+  speculation; it may await only an in-flight retrieval whose source text literally
+  equals the commit, then uses the bounded exact committed-text fallback if that
+  retrieval fails. Any text change takes that fallback. Grounded answer generation
+  never starts before Send.
 
-Both paths share the corpus, chunker, embeddings, search policy, top-k, grounded
-answer agent, prompt, memory policy, and scorer. Formal runs use separate backend
-processes, local stores, cache namespaces, and sessions so neither path can warm
-the other.
+Both paths share the corpus, chunker, embeddings, search policy, top-k, exact
+committed-text fallback, grounded answer agent, prompt, memory policy, and scorer.
+Stream adds only the pre-Send trigger and speculative work. Formal runs use
+separate backend processes, local stores, cache namespaces, and sessions so neither
+path can warm the other.
+
+The answer agent's privileged instructions are static. Question text, query time,
+conversation summary, and retrieved evidence travel in one user-role JSON object
+and are explicitly treated as untrusted data. Both OpenAI Responses and embedding
+clients use zero SDK retries; timeout, cancellation, provider, tool, and summary
+accounting gaps remain explicit and force lower-bound cost labeling.
 
 This is a text experiment. Send is the endpoint, partial typed words replace
 partial ASR transcripts, and the benchmark excludes ASR, speech endpoint
@@ -48,13 +57,18 @@ detection, TTS, and trailing-silence gains.
 
 The API and OpenAI clients are asynchronous. Embedded Qdrant's synchronous client
 runs behind one dedicated worker thread, so vector work does not block the event
-loop. The frontend keeps at most one snapshot request in flight and one replaceable
-latest snapshot; Send/cancel stays responsive. `answer.ready` is the user-visible
-terminal boundary after grounded generation, so the UI stops loading before
-bounded post-answer persistence. The later `answer.completed` event carries final
-accounting and maintenance status. Follow-up context reads use the same session
-lease as persistence, so they cannot observe a half-saved turn; if optional
-compaction fails, the completed turn is durably saved uncompressed. This is a
+loop. The frontend keeps at most one changed snapshot request in flight and one
+replaceable latest snapshot. Send cancels queued/in-flight snapshot transport and
+does not await it. `answer.ready` is the user-visible
+answer boundary after grounded generation, so the UI stops loading before bounded
+post-answer persistence. The SSE connection remains open through
+`answer.completed` and closes only on `run.completed` or `run.error`, preserving
+final accounting and persistence status. Follow-up context reads use the same session
+lease as persistence, so they cannot observe a half-saved turn. Compaction, normal
+save, and cancellation fallback share one absolute configured post-answer lease;
+cancellation cannot restart or extend it, and failure remains visible. Send atomically
+reserves the terminal turn boundary before index-readiness or context awaits, so an
+idle reaper or index-sync admission cannot overtake commit setup. This is a
 bounded local-assessment design, not a claim of unlimited production concurrency.
 
 ## Run locally
@@ -94,15 +108,26 @@ Normal reproduction does not download the 705 MiB upstream CRAG release. Source
 download and deterministic regeneration remain available as an optional provenance
 audit.
 
-`POST /v1/data/sync` hashes the desired chunks and their embedding configuration,
-embeds only missing or changed chunks, removes stale points, and advances a durable
-index version. That version is part of bounded query/result cache keys. Local
-Qdrant stores generated state under `data/qdrant/`; it is not committed.
+`POST /v1/data/sync` first captures and verifies one immutable dataset snapshot,
+then chunks and fingerprints those exact retained corpus bytes. It atomically
+admits maintenance only while no turn, answer task, or commit setup is active.
+Existing work blocks sync with 409; admitted maintenance rejects new turns with
+503. Sync marks durable metadata unready before mutation, clears ranked-result
+caches, embeds only missing or changed chunks, removes stale points, and marks the
+index ready only after final metadata is committed. A failed or interrupted sync
+therefore remains unready across restart.
+
+Every answer checks the current dataset checksum/approval and requires the durable
+ready flag, source fingerprint, version, desired point count, and physical Qdrant
+point count to agree. Search also fails if readiness/version changes in flight.
+The durable version remains part of bounded query/result cache keys. Local Qdrant
+state under `data/qdrant/` is generated and not committed.
 
 A real-API build indexed 1,000/1,000 points with `text-embedding-3-large` using
-366,142 embedding tokens. Index wall time is treated as volatile operational
-evidence rather than a benchmark metric. The corpus pages themselves are complete
-after HTML/script/style cleaning; no selected page is character- or token-truncated.
+366,142 embedding tokens. The final clean reproduction built both fresh isolated
+indexes in 94.83 seconds total; that volatile wall time is operational evidence,
+not a benchmark metric. The corpus pages themselves are complete after
+HTML/script/style cleaning; no selected page is character- or token-truncated.
 
 ## Verification and measured development evidence
 
@@ -138,32 +163,43 @@ non-reportable. The smoke runner refuses any filename other than
 `dev_queries.jsonl`; the ordinary final runner still requires an approved redacted
 inference bundle and approved service status.
 
+The automatic scorer accepts a citation only when the exact cited chunk is present
+in that prediction's retrieved sources and resolves it to the frozen support map.
+Optional human semantic labels are separate and must bind to the exact raw
+prediction SHA-256; stale adjudications are rejected.
+
 The retained real development comparison used exactly 5 checksum-bound development
-questions × 2 isolated paths, deterministic 70-WPM typing, and one measured pass.
-Both paths completed all five with 100% automatic expected-answer, evidence support,
-supporting-citation, and false-premise correctness. Stream won TTFT on all 5/5
-pairs; the median paired Stream-minus-Naive delta was -3,090.101 ms (-33.7579%)
-for TTFT and -1,251.090 ms for total time. The paired p95 TTFT delta was
--1,178.695 ms. Negative latency deltas favor Stream.
+questions × 2 isolated paths, deterministic 70-WPM typing, a fixed 5,000 ms pause
+after typing and before Send, and one measured pass. The changed-only sampler
+delivered the complete draft once during that pause; it did not resend unchanged
+text. No answer was generated before Send. Both paths completed all five with
+100% automatic expected-answer/alias match, evidence support, valid citation,
+supporting-document citation, and false-premise rejection. These are automatic
+proxies; human semantic-adjudication coverage was 0%, so this is not a claim of
+measured semantic correctness.
 
-This small live run does not prove causality or a general speedup, and it showed no
-accuracy gain because both paths were already perfect on the automatic checks.
-Stream's fallback, compatible post-commit overlap, and speculative-reuse rates were
-60%, 20%, and 20%. Accepted evidence still had zero pre-Send lead on every case.
-Stream used 19 model API calls, 21 controller calls, and 12 retrievals versus
-Naive's 8, 5, and 5; neither path issued a dynamic function-tool call. Observed
-costs were lower bounds—at least $0.10848677 for Stream and $0.06640001 for
-Naive—because cancelled, failed, or timed-out calls did not all return provider
-usage. Complete accounting covered 0/5 Stream and 3/5 Naive outputs, so no paired
-cost delta is available. The artifact is `reportable: false`; the unseen test
-split remains sealed.
+Stream won TTFT on all 5/5 pairs. Median TTFT was 1,175.745 ms for Stream versus
+3,663.915 ms for Naive; the paired median Stream-minus-Naive delta was
+-2,167.428 ms (-59.1560%). Median total time was 2,047.255 ms versus 4,268.152 ms,
+and the paired median total-time delta was -2,374.568 ms. Negative deltas favor
+Stream. Paired p95 TTFT delta was -947.191 ms; all five pairs were faster.
 
-The retained development run took 191.662 s. Clean-clone wall time is kept
-separate from this source-bound benchmark evidence; superseded pre-fix timing is
-intentionally not reused. The workflow remains designed to stay below 15–20
-minutes on a normal connection and responsive OpenAI service; the 45 s per-case
-deadline, first-time package downloads, and provider variance are the main sources
-of variation.
+This small live run does not prove causality or a universal speedup, and it showed
+no automatic-proxy gain because both paths matched all expected answers. Stream
+reused exact completed speculative evidence in 5/5 cases; all five were ready
+before commit and no committed-text fallback was needed. Naive used 5 usage-
+accounted model calls, 0 controller attempts, and 5 retrievals; Stream used 17,
+18, and 13. Neither path issued a dynamic function-tool call. Observed run cost
+was a complete $0.05899131 for Naive and at least $0.10140119 for Stream. Mean observed cost was
+$0.011798262 and at least $0.020280238, respectively. Stream accounting was
+complete on 0/5 outputs, so no pair supports a final cost comparison. The artifact
+is `reportable: false`; the unseen test split remains sealed.
+
+The retained development run took 203.743 s. The final clean reproduction took
+about 5 minutes 10 seconds including setup, checksum verification, tests/build,
+two fresh real indexes, the same five-pair real benchmark, scoring, and service
+startup. That is comfortably inside the 15–20 minute reviewer envelope; provider
+variance and first-time package downloads remain the main sources of variation.
 
 See [`docs/BENCHMARK_REPORT.md`](docs/BENCHMARK_REPORT.md) for the non-final
 development evidence and frozen-test protocol,

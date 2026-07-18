@@ -29,11 +29,38 @@ open event streams, and—while the service is idle—request index synchronizat
 Those operations can consume the configured OpenAI account, read application
 answers/citations, and mutate local assessment state.
 
-Session and turn UUIDs prevent accidental collisions; they are not authorization
-credentials. `ALLOW_UNREVIEWED_DATASET` is a benchmark-integrity gate, not a
-security mechanism. Local SQLite/Qdrant/metrics files may contain conversation
-text, source metadata, timing, and usage, so workstation and Docker-volume file
-permissions remain part of the trust boundary.
+Session identifiers and bounded turn identifiers prevent accidental collisions;
+they are not authorization credentials. Turn IDs are pattern- and length-validated
+before runtime state allocation, but remain caller-controlled. `ALLOW_UNREVIEWED_DATASET`
+is a benchmark-integrity gate, not a security mechanism. Local
+SQLite/Qdrant/metrics files may contain conversation text, source metadata, timing,
+and usage, so workstation and Docker-volume file permissions remain part of the
+trust boundary.
+
+The grounded agent keeps privileged instructions static. The current question,
+query time, conversation summary, and retrieved evidence are serialized into one
+user-role JSON object and explicitly treated as untrusted data. This reduces prompt
+injection privilege escalation from corpus/history text, but it is defense in depth,
+not a substitute for document provenance or output review.
+
+Index synchronization is admitted atomically only while no turn, answer task, or
+commit setup is active. It marks durable metadata unready before mutation; a failed
+sync remains unavailable across restart until repaired. Every answer re-verifies
+dataset integrity/approval and requires source/version/count/physical-point
+agreement, so a partially mutated or changed corpus fails closed. The health gate
+also includes dataset approval: an otherwise valid candidate index is ready only
+when the explicit development override is active.
+
+Send atomically reserves its terminal turn record before index-readiness, context,
+or event-channel awaits. The idle reaper and maintenance admission see that
+reservation immediately, preventing either from overtaking an admitted commit.
+
+Post-answer persistence has one absolute configured lease covering compaction,
+normal save, and raw-save fallback. If cancellation arrives after the answer is
+visible, fallback can use only the time remaining in that same lease; it cannot
+start an additive emergency timeout. A stalled save therefore cannot hold the
+session lease indefinitely, and the UI never reports persistence success unless
+completion was observed.
 
 ## Configuration lifecycle
 

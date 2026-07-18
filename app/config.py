@@ -40,7 +40,7 @@ class Settings:
     qdrant_collection: str = os.getenv("QDRANT_COLLECTION", "crag_chunks")
     embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
     openai_embedding_timeout_s: float = float(os.getenv("OPENAI_EMBEDDING_TIMEOUT_S", "45"))
-    openai_embedding_max_retries: int = int(os.getenv("OPENAI_EMBEDDING_MAX_RETRIES", "1"))
+    openai_embedding_max_retries: int = int(os.getenv("OPENAI_EMBEDDING_MAX_RETRIES", "0"))
     allow_unreviewed_dataset: bool = _bool("ALLOW_UNREVIEWED_DATASET", False)
 
     chunk_tokens: int = int(os.getenv("CHUNK_TOKENS", "400"))
@@ -56,6 +56,7 @@ class Settings:
     trigger_interval_ms: int = int(os.getenv("TRIGGER_INTERVAL_MS", "500"))
     trigger_max_presubmit_calls: int = int(os.getenv("TRIGGER_MAX_PRESUBMIT_CALLS", "4"))
     parallel_raw_retrieval: bool = _bool("PARALLEL_RAW_RETRIEVAL", True)
+    settled_draft_delay_ms: int = int(os.getenv("SETTLED_DRAFT_DELAY_MS", "500"))
     trigger_timeout_s: float = float(os.getenv("TRIGGER_TIMEOUT_S", "4.0"))
     retrieval_timeout_s: float = float(os.getenv("RETRIEVAL_TIMEOUT_S", "6.0"))
     answer_timeout_s: float = float(os.getenv("ANSWER_TIMEOUT_S", "30.0"))
@@ -77,7 +78,8 @@ class Settings:
         if item.strip()
     )
 
-    # Standard API prices checked 2026-07-17. Actual usage is always logged.
+    # Standard API prices checked 2026-07-17. Returned usage is logged; explicit
+    # unpriced counters identify interrupted calls whose final usage is unavailable.
     sol_input_per_million: float = 5.0
     sol_cache_write_per_million: float = 6.25
     sol_cached_input_per_million: float = 0.5
@@ -88,9 +90,7 @@ class Settings:
         if self.openai_model != "gpt-5.6-sol":
             raise ValueError("the locked assessment model is 'gpt-5.6-sol'")
         if self.embedding_model != "text-embedding-3-large":
-            raise ValueError(
-                "the locked assessment embedding model is 'text-embedding-3-large'"
-            )
+            raise ValueError("the locked assessment embedding model is 'text-embedding-3-large'")
         if self.reasoning_effort != "medium":
             raise ValueError(
                 "the locked grounded-answer configuration requires reasoning effort 'medium'"
@@ -105,28 +105,33 @@ class Settings:
             )
         if self.openai_service_tier != "default":
             raise ValueError("the locked assessment configuration requires service tier 'default'")
-        if self.chunk_overlap >= self.chunk_tokens:
-            raise ValueError("chunk overlap must be smaller than chunk size")
+        if self.chunk_tokens <= 0:
+            raise ValueError("chunk size must be positive")
+        if not 0 <= self.chunk_overlap < self.chunk_tokens:
+            raise ValueError("chunk overlap must be non-negative and smaller than chunk size")
         if not 1 <= self.top_k <= self.retrieve_candidates:
             raise ValueError("TOP_K must be between 1 and RETRIEVE_CANDIDATES")
         if self.openai_embedding_timeout_s <= 0:
             raise ValueError("OPENAI_EMBEDDING_TIMEOUT_S must be positive")
-        if not 0 <= self.openai_embedding_max_retries <= 3:
-            raise ValueError("OPENAI_EMBEDDING_MAX_RETRIES must be between 0 and 3")
-        if min(
-            self.trigger_timeout_s,
-            self.retrieval_timeout_s,
-            self.answer_timeout_s,
-            self.summary_timeout_s,
-            self.post_answer_persistence_timeout_s,
-            self.turn_idle_timeout_s,
-            self.session_retention_hours,
-        ) <= 0:
+        if self.openai_embedding_max_retries != 0:
+            raise ValueError("the locked assessment disables embedding SDK retries")
+        if self.settled_draft_delay_ms != 500:
+            raise ValueError("the locked assessment requires SETTLED_DRAFT_DELAY_MS=500")
+        if (
+            min(
+                self.trigger_timeout_s,
+                self.retrieval_timeout_s,
+                self.answer_timeout_s,
+                self.summary_timeout_s,
+                self.post_answer_persistence_timeout_s,
+                self.turn_idle_timeout_s,
+                self.session_retention_hours,
+            )
+            <= 0
+        ):
             raise ValueError("runtime deadlines and retention windows must be positive")
         if self.post_answer_persistence_timeout_s <= self.summary_timeout_s:
-            raise ValueError(
-                "POST_ANSWER_PERSISTENCE_TIMEOUT_S must exceed SUMMARY_TIMEOUT_S"
-            )
+            raise ValueError("POST_ANSWER_PERSISTENCE_TIMEOUT_S must exceed SUMMARY_TIMEOUT_S")
 
 
 settings = Settings()

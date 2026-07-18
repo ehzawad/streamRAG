@@ -1,4 +1,8 @@
-import { SSE_EVENT_TYPES } from "./runLifecycle";
+import {
+  COMMIT_REQUEST_TIMEOUT_MS,
+  SNAPSHOT_REQUEST_TIMEOUT_MS,
+  SSE_EVENT_TYPES,
+} from "./runLifecycle";
 
 export type PathName = "naive" | "stream" | "compare";
 
@@ -9,6 +13,7 @@ export type BackendEvent = {
   text?: string;
   answer?: string;
   action?: string;
+  state?: string;
   query?: string | null;
   message?: string;
   sources?: Source[];
@@ -31,14 +36,19 @@ export type BackendEvent = {
       | "precommit_revalidated"
       | "presubmit_retrieval_revalidated_at_commit"
       | "inflight_completed_postcommit"
-      | "commit_endpoint";
+      | "committed_text_retrieval";
     commit_fallbacks: number;
   };
   tool_traces?: unknown[];
   ready_before_commit?: boolean;
   retrieval_completed_before_commit?: boolean;
   candidate?: boolean;
+  commit_safe_exact?: boolean;
   estimated_cost_usd?: { total: number; accounting_complete: boolean };
+  persistence?: {
+    status: string;
+    elapsed_ms: number | null;
+  };
 };
 
 export type Source = {
@@ -95,6 +105,7 @@ export async function getHealth() {
     reasoning_effort: string;
     trigger_reasoning_effort: string;
     summary_reasoning_effort: string;
+    settled_draft_delay_ms: number;
   }>;
 }
 
@@ -111,8 +122,7 @@ export function sendSnapshot(args: {
     path: args.path,
     revision: args.revision,
     text: args.text,
-    client_ts_ms: performance.now(),
-  }, args.signal, 5_000);
+  }, args.signal, SNAPSHOT_REQUEST_TIMEOUT_MS);
 }
 
 export function commit(args: {
@@ -131,9 +141,9 @@ export function commit(args: {
       revision: args.revision,
       text: args.text,
       query_time: new Date().toISOString(),
-      client_ts_ms: performance.now(),
     },
     args.signal,
+    COMMIT_REQUEST_TIMEOUT_MS,
   );
 }
 

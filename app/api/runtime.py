@@ -4,8 +4,11 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 
 from app.agent.context import evidence_block
@@ -13,18 +16,17 @@ from app.agent.service import GroundedAgent
 from app.api.events import EventRegistry
 from app.api.schemas import CommitRequest, SnapshotRequest
 from app.config import Settings
-from app.data.vector_store import QdrantVectorStore
-from app.fingerprints import runtime_fingerprints
+from app.data.crag import require_dataset_snapshot
+from app.data.vector_store import IndexNotReadyError, QdrantVectorStore
+from app.fingerprints import index_source_sha256_for_documents, runtime_fingerprints
 from app.metrics import JsonlMetricLogger, model_cost
 from app.models import InputSnapshot, SearchResult, Usage
-from app.stream.coordinator import (
-    EndpointPlanResult,
-    StreamCoordinator,
-)
+from app.stream.coordinator import StreamCoordinator
 from app.stream.snapshot import SnapshotAnalyzer
 from app.stream.trigger import ModelTrigger, bounded_retrieval_query
 
 TERMINAL_TURN_LIMIT = 4096
+TURN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 logger = logging.getLogger(__name__)
 
 
@@ -44,7 +46,7 @@ class TurnConflictError(RuntimeError):
 
 
 class IndexMaintenanceError(RuntimeError):
-    """Live turn work is unavailable while the embedded index is being updated."""
+    """Live turn admission is unavailable while the index is being updated."""
 
 
 @dataclass
@@ -70,6 +72,7 @@ class PathTelemetry:
     controller_elapsed_ms: float = 0.0
     retrieval_calls: int = 1
     raw_retrieval_calls: int = 0
+    settled_draft_retrievals: int = 0
     retrieval_embedding_tokens: int = 0
     retrieval_query_vector_ms: float = 0.0
     retrieval_ann_ms: float = 0.0
@@ -77,11 +80,11 @@ class PathTelemetry:
     retrieval_failures: int = 0
     stale_discards: int = 0
     trigger_cancellations: int = 0
+    unpriced_trigger_cancellations: int = 0
     retrieval_cancellations: int = 0
     evidence_reuses: int = 0
     evidence_revalidations: int = 0
     commit_fallbacks: int = 0
-    endpoint_failures: int = 0
     first_speculative_started_ms: float | None = None
     first_speculative_ready_ms: float | None = None
     accepted_revision: int | None = None
@@ -92,20 +95,12 @@ class PathTelemetry:
 
 
 @dataclass
-class EndpointRetrievalResult:
-    """Complete-input controller and retrieval result used by Naive RAG."""
+class CommittedTextRetrieval:
+    """Exact complete-input retrieval result used by Naive RAG."""
 
     result: SearchResult
     started_ms: float
     completed_ms: float
-    controller_usage: Usage = field(default_factory=Usage)
-    controller_calls: int = 0
-    retrieval_calls: int = 1
-    controller_timeouts: int = 0
-    controller_failures: int = 0
-    controller_elapsed_ms: float = 0.0
-    retrieval_timeouts: int = 0
-    retrieval_failures: int = 0
 
 
 class RagRuntime:
@@ -134,8 +129,56 @@ class RagRuntime:
         self.counters = RuntimeCounters()
         self._turn_lock = asyncio.Lock()
         self.index_maintenance = asyncio.Lock()
+        self._index_maintenance_admitted = False
         self.instance_id = str(uuid.uuid4())
         self.fingerprints = runtime_fingerprints(settings)
+
+    def _ensure_index_available_locked(self) -> None:
+        if self._index_maintenance_admitted or self.index_maintenance.locked():
+            raise IndexMaintenanceError("index maintenance is in progress")
+
+    @staticmethod
+    def _validate_turn_id(turn_id: str) -> None:
+        if TURN_ID_PATTERN.fullmatch(turn_id) is None:
+            raise ValueError("turn_id must be 1-128 URL-safe letters, digits, or ._:- characters")
+
+    async def _assert_index_ready(self) -> None:
+        try:
+            snapshot = await asyncio.to_thread(
+                require_dataset_snapshot,
+                self.settings.dataset_dir,
+                self.settings.allow_unreviewed_dataset,
+            )
+            expected_source = index_source_sha256_for_documents(
+                self.settings,
+                snapshot.documents_sha256,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise IndexNotReadyError(
+                "current dataset is not approved and checksum-valid; repair it and run data sync"
+            ) from exc
+        await self.store.assert_ready(expected_source)
+
+    def _has_pending_commit_setup_locked(self) -> bool:
+        return any(
+            reservation is not None and not reservation.started
+            for reservation in self.terminal_turns.values()
+        )
+
+    @asynccontextmanager
+    async def index_maintenance_guard(self) -> AsyncIterator[None]:
+        """Claim exclusive index maintenance only while the runtime is idle."""
+        async with self._turn_lock:
+            self._ensure_index_available_locked()
+            if self.tasks or self.turns or self._has_pending_commit_setup_locked():
+                raise IndexMaintenanceError("index sync requires an idle service")
+            self._index_maintenance_admitted = True
+        try:
+            async with self.index_maintenance:
+                yield
+        finally:
+            async with self._turn_lock:
+                self._index_maintenance_admitted = False
 
     def start_maintenance(self) -> None:
         task = asyncio.create_task(self._maintenance_loop())
@@ -180,112 +223,70 @@ class RagRuntime:
         cutoff_ms = now_ms - self.settings.turn_idle_timeout_s * 1000
         async with self._turn_lock:
             expired = [
-                turn_id
+                (turn_id, coordinator)
                 for turn_id, coordinator in self.turns.items()
                 if not coordinator.committed and coordinator.last_activity_ms < cutoff_ms
             ]
-        for turn_id in expired:
-            await self.cancel_turn(turn_id)
-        return len(expired)
+        reaped = 0
+        for turn_id, coordinator in expired:
+            reaped += await self._cancel_idle_turn(turn_id, coordinator, cutoff_ms)
+        return reaped
+
+    async def _cancel_idle_turn(
+        self,
+        turn_id: str,
+        expected: StreamCoordinator,
+        cutoff_ms: float,
+    ) -> int:
+        """Cancel only the same still-uncommitted coordinator selected by the reaper."""
+        async with self._turn_lock:
+            coordinator = self.turns.get(turn_id)
+            if (
+                coordinator is not expected
+                or coordinator.committed
+                or coordinator.last_activity_ms >= cutoff_ms
+                or turn_id in self.terminal_turns
+                or turn_id in self.turn_tasks
+            ):
+                return 0
+            self.terminal_turns[turn_id] = None
+            self._prune_terminal_turns_locked(protected_turn_id=turn_id)
+            self.turns.pop(turn_id, None)
+            self.turn_bindings.pop(turn_id, None)
+        await coordinator.close()
+        await self.events.close_and_remove(f"turn:{turn_id}")
+        return 1
 
     @staticmethod
     def _cache_scope(session_id: str, path: str) -> str:
         """Keep every implementation's retrieval work causally isolated."""
         return f"{session_id}:{path}"
 
-    async def _endpoint_retrieve(
+    async def _retrieve_committed_text(
         self,
         snapshot: InputSnapshot,
         *,
         session_id: str,
         path: str,
-        conversation_context: str,
-    ) -> EndpointRetrievalResult:
-        """Run the complete-input policy shared by both implementations.
-
-        The controller may improve the retrieval query. A controller timeout or
-        provider/parse failure falls back to the exact committed text, while the
-        retrieval itself is still attempted only once by this policy.
-        """
-        plan = await self._endpoint_plan(
-            snapshot,
-            previous_query=None,
-            conversation_context=conversation_context,
-        )
-
+    ) -> CommittedTextRetrieval:
+        """Retrieve the immutable committed text once for the Naive baseline."""
+        query = bounded_retrieval_query(snapshot.text)
         started_ms = time.perf_counter() * 1000
         try:
             result = await asyncio.wait_for(
                 self.store.search(
-                    plan.query,
+                    query,
                     cache_scope=self._cache_scope(session_id, path),
                 ),
                 timeout=self.settings.retrieval_timeout_s,
             )
         except TimeoutError:
-            raise RuntimeError("endpoint retrieval timed out") from None
+            raise RuntimeError("committed-text retrieval timed out") from None
         completed_ms = time.perf_counter() * 1000
-        return EndpointRetrievalResult(
+        return CommittedTextRetrieval(
             result=result,
             started_ms=started_ms,
             completed_ms=completed_ms,
-            controller_usage=plan.controller_usage,
-            controller_calls=plan.controller_calls,
-            retrieval_calls=1,
-            controller_timeouts=plan.controller_timeouts,
-            controller_failures=plan.controller_failures,
-            controller_elapsed_ms=plan.controller_elapsed_ms,
-        )
-
-    async def _endpoint_plan(
-        self,
-        snapshot: InputSnapshot,
-        *,
-        previous_query: str | None,
-        conversation_context: str,
-    ) -> EndpointPlanResult:
-        """Run the complete-input controller shared by both benchmark paths."""
-        controller_usage = Usage()
-        controller_timeouts = 0
-        controller_failures = 0
-        action = "retrieve"
-        controller_started = time.perf_counter()
-        try:
-            trigger_result = await asyncio.wait_for(
-                self.trigger.decide(
-                    draft=snapshot.text,
-                    previous_query=previous_query,
-                    conversation_context=conversation_context,
-                    is_commit=True,
-                ),
-                timeout=self.settings.trigger_timeout_s,
-            )
-            controller_usage.add(trigger_result.usage)
-            decision = trigger_result.decision
-            action = decision.action
-            if decision.candidate_query_compatible and previous_query:
-                query = previous_query
-                action = "keep_previous"
-            elif decision.action == "retrieve" and decision.retrieval_query:
-                query = decision.retrieval_query
-            else:
-                query = snapshot.text
-        except TimeoutError:
-            controller_timeouts = 1
-            query = snapshot.text
-        except Exception:
-            controller_failures = 1
-            query = snapshot.text
-        query = bounded_retrieval_query(query)
-        controller_elapsed_ms = (time.perf_counter() - controller_started) * 1000
-        return EndpointPlanResult(
-            query=query,
-            decision_action=action,
-            controller_usage=controller_usage,
-            controller_calls=1,
-            controller_timeouts=controller_timeouts,
-            controller_failures=controller_failures,
-            controller_elapsed_ms=controller_elapsed_ms,
         )
 
     async def _coordinator(
@@ -296,10 +297,11 @@ class RagRuntime:
         request_path: str,
         allow_terminal: bool = False,
     ) -> StreamCoordinator:
-        # Do the potentially blocking SQLite/context reads outside the global
+        # Do the potentially waiting SQLite/context reads outside the global
         # turn registry lock.  A second locked check below preserves the
         # single-coordinator invariant if two first snapshots race.
         async with self._turn_lock:
+            self._ensure_index_available_locked()
             if turn_id in self.terminal_turns and not allow_terminal:
                 raise TurnClosedError(f"turn {turn_id!r} is already committed or cancelled")
             existing = self.turns.get(turn_id)
@@ -310,10 +312,11 @@ class RagRuntime:
                     )
                 return existing
 
-        channel = await self.events.get(f"turn:{turn_id}")
+        await self._assert_index_ready()
         conversation_context = await self.agent.conversation_context(f"{session_id}:stream")
 
         async with self._turn_lock:
+            self._ensure_index_available_locked()
             if turn_id in self.terminal_turns and not allow_terminal:
                 raise TurnClosedError(f"turn {turn_id!r} is already committed or cancelled")
             existing = self.turns.get(turn_id)
@@ -324,24 +327,18 @@ class RagRuntime:
                     )
                 return existing
 
-            async def endpoint_plan(
-                snapshot: InputSnapshot, previous_query: str | None
-            ) -> EndpointPlanResult:
-                return await self._endpoint_plan(
-                    snapshot,
-                    previous_query=previous_query,
-                    conversation_context=conversation_context,
-                )
+            async def publish(payload: dict) -> None:
+                channel = await self.events.get(f"turn:{turn_id}")
+                await channel.publish(payload)
 
             coordinator = StreamCoordinator(
                 turn_id=turn_id,
                 index=self.store,
                 trigger=self.trigger,
                 settings=self.settings,
-                send=channel.publish,
+                send=publish,
                 conversation_context=conversation_context,
                 analyzer=SnapshotAnalyzer(),
-                endpoint_plan=endpoint_plan,
                 cache_scope=self._cache_scope(session_id or turn_id, "stream"),
             )
             self.turns[turn_id] = coordinator
@@ -349,8 +346,7 @@ class RagRuntime:
             return coordinator
 
     async def accept_snapshot(self, turn_id: str, request: SnapshotRequest) -> None:
-        if self.index_maintenance.locked():
-            raise IndexMaintenanceError("index maintenance is in progress")
+        self._validate_turn_id(turn_id)
         coordinator = await self._coordinator(
             turn_id,
             session_id=request.session_id,
@@ -361,13 +357,11 @@ class RagRuntime:
                 turn_id=turn_id,
                 revision=request.revision,
                 text=request.text,
-                client_ts_ms=request.client_ts_ms,
             )
         )
 
     async def start_commit(self, turn_id: str, request: CommitRequest) -> str:
-        if self.index_maintenance.locked():
-            raise IndexMaintenanceError("index maintenance is in progress")
+        self._validate_turn_id(turn_id)
         committed_ms = time.perf_counter() * 1000
         payload_sha256 = hashlib.sha256(
             json.dumps(
@@ -401,12 +395,16 @@ class RagRuntime:
                     raise TurnConflictError(
                         "turn_id already reached a different commit or cancel boundary"
                     )
-            if pending_duplicate is None:
+            else:
+                self._ensure_index_available_locked()
                 binding = self.turn_bindings.get(turn_id)
                 if binding is not None and binding != (request.session_id, request.path):
                     raise TurnConflictError(
                         "turn_id is already bound to a different session or path"
                     )
+                # Reserve the immutable Send boundary before any readiness or
+                # context await. The idle reaper and index maintenance gate
+                # must observe an in-progress commit from this point onward.
                 self.terminal_turns[turn_id] = reservation
                 self._prune_terminal_turns_locked(protected_turn_id=turn_id)
         if pending_duplicate is not None:
@@ -418,6 +416,7 @@ class RagRuntime:
                 + (f": {pending_duplicate.setup_error}" if pending_duplicate.setup_error else "")
             )
         try:
+            await self._assert_index_ready()
             coordinator: StreamCoordinator | None = None
             if request.path in {"stream", "compare"}:
                 coordinator = await self._coordinator(
@@ -434,6 +433,7 @@ class RagRuntime:
                     await speculative.close()
             await self.events.get(f"run:{run_id}")
             async with self._turn_lock:
+                self._ensure_index_available_locked()
                 if self.terminal_turns.get(turn_id) is not reservation:
                     raise TurnClosedError("turn was cancelled during commit setup")
                 if coordinator is not None:
@@ -442,7 +442,6 @@ class RagRuntime:
                             turn_id=turn_id,
                             revision=request.revision,
                             text=request.text,
-                            client_ts_ms=request.client_ts_ms,
                         ),
                         committed_ms,
                     )
@@ -595,17 +594,14 @@ class RagRuntime:
         request_started_ms,
         send,
     ) -> None:
-        conversation_context = await self.agent.conversation_context(f"{request.session_id}:naive")
-        endpoint = await self._endpoint_retrieve(
+        committed_retrieval = await self._retrieve_committed_text(
             InputSnapshot(
                 turn_id=turn_id,
                 revision=request.revision,
                 text=request.text,
-                client_ts_ms=request.client_ts_ms,
             ),
             session_id=request.session_id,
             path="naive",
-            conversation_context=conversation_context,
         )
         await self._answer(
             run_id=run_id,
@@ -613,19 +609,13 @@ class RagRuntime:
             path="naive",
             request=request,
             retrieval=PathTelemetry(
-                result=endpoint.result,
-                retrieval_started_ms=endpoint.started_ms,
-                retrieval_ready_ms=endpoint.completed_ms,
-                controller_usage=endpoint.controller_usage,
-                controller_calls=endpoint.controller_calls,
-                controller_timeouts=endpoint.controller_timeouts,
-                controller_failures=endpoint.controller_failures,
-                controller_elapsed_ms=endpoint.controller_elapsed_ms,
-                retrieval_calls=endpoint.retrieval_calls,
-                retrieval_embedding_tokens=endpoint.result.embedding_tokens,
-                retrieval_query_vector_ms=endpoint.result.query_vector_ms,
-                retrieval_ann_ms=endpoint.result.ann_ms,
-                retrieval_timeouts=endpoint.retrieval_timeouts,
+                result=committed_retrieval.result,
+                retrieval_started_ms=committed_retrieval.started_ms,
+                retrieval_ready_ms=committed_retrieval.completed_ms,
+                retrieval_calls=1,
+                retrieval_embedding_tokens=committed_retrieval.result.embedding_tokens,
+                retrieval_query_vector_ms=committed_retrieval.result.query_vector_ms,
+                retrieval_ann_ms=committed_retrieval.result.ann_ms,
                 accepted_revision=request.revision,
                 accepted_from_fallback=True,
                 accepted_ready_before_commit=False,
@@ -656,7 +646,6 @@ class RagRuntime:
                 turn_id=turn_id,
                 revision=request.revision,
                 text=request.text,
-                client_ts_ms=request.client_ts_ms,
             )
         )
         commit_gate_ms = time.perf_counter() * 1000 - commit_gate_started_ms
@@ -677,6 +666,7 @@ class RagRuntime:
                 controller_elapsed_ms=metrics.trigger_elapsed_ms,
                 retrieval_calls=metrics.retrieval_calls,
                 raw_retrieval_calls=metrics.raw_retrieval_calls,
+                settled_draft_retrievals=metrics.settled_draft_retrievals,
                 retrieval_embedding_tokens=metrics.retrieval_embedding_tokens,
                 retrieval_query_vector_ms=metrics.retrieval_query_vector_ms,
                 retrieval_ann_ms=metrics.retrieval_ann_ms,
@@ -684,11 +674,11 @@ class RagRuntime:
                 retrieval_failures=metrics.retrieval_failures,
                 stale_discards=metrics.stale_discards,
                 trigger_cancellations=metrics.trigger_cancellations,
+                unpriced_trigger_cancellations=metrics.unpriced_trigger_cancellations,
                 retrieval_cancellations=metrics.retrieval_cancellations,
                 evidence_reuses=metrics.evidence_reuses,
                 evidence_revalidations=metrics.evidence_revalidations,
                 commit_fallbacks=metrics.commit_fallbacks,
-                endpoint_failures=metrics.endpoint_failures,
                 first_speculative_started_ms=metrics.first_retrieval_started_ms,
                 first_speculative_ready_ms=metrics.first_retrieval_ready_ms,
                 accepted_revision=metrics.accepted_revision,
@@ -731,9 +721,7 @@ class RagRuntime:
         tool_embedding_tokens = 0
         incomplete_tool_traces: list[dict] = []
         embedding_usd = (
-            retrieval_embedding_tokens
-            * self.settings.embedding_input_per_million
-            / 1_000_000
+            retrieval_embedding_tokens * self.settings.embedding_input_per_million / 1_000_000
         )
         await send(
             {
@@ -750,8 +738,11 @@ class RagRuntime:
         persistence_usage = Usage()
         tool_traces: list[dict] = []
         tool_started_ms: dict[str, float] = {}
+        tool_attempt_count = 0
         tool_wall_ms = 0.0
         compression_calls: int | None = None
+        summary_accounting_complete = False
+        unpriced_summary_timeout_calls = 0
         generation_started_ms = time.perf_counter() * 1000
         answer_completed_ms: float | None = None
         persistence_started_ms: float | None = None
@@ -768,6 +759,120 @@ class RagRuntime:
             cache_scope=self._cache_scope(request.session_id, path),
         )
         events = aiter(event_stream)
+
+        async def write_generation_failure(
+            *,
+            error_type: str,
+            message: str,
+            timed_out: bool,
+        ) -> None:
+            failed_ms = time.perf_counter() * 1000
+            known_usage = Usage()
+            known_usage.add(retrieval.controller_usage)
+            known_usage.add(agent_usage)
+            known_model_usd = model_cost(known_usage, self.settings).total_usd
+            unpriced_generation_failures = int(not timed_out and answer_completed_ms is None)
+            unpriced_local_tools = (
+                len(incomplete_tool_traces) if tool_traces else tool_attempt_count
+            )
+            known_lower_bound = bool(
+                timed_out
+                or unpriced_generation_failures
+                or unpriced_local_tools
+                or retrieval.unpriced_trigger_cancellations
+                or retrieval.retrieval_cancellations
+                or retrieval.controller_timeouts
+                or retrieval.controller_failures
+                or retrieval.retrieval_timeouts
+                or retrieval.retrieval_failures
+            )
+            await self.logger.write(
+                {
+                    "schema_version": 2,
+                    "status": "failed",
+                    "run_id": run_id,
+                    "turn_id": turn_id,
+                    "session_id": request.session_id,
+                    "path": path,
+                    "question": request.text,
+                    "query_time": request.query_time,
+                    "answer": answer,
+                    "sources": sources,
+                    "error": {
+                        "stage": "generation",
+                        "type": error_type,
+                        "message": message,
+                    },
+                    "timing": {
+                        "submit_to_first_token_ms": (
+                            first_token_ms - committed_ms if first_token_ms is not None else None
+                        ),
+                        "elapsed_to_failure_ms": failed_ms - committed_ms,
+                        "queue_before_path_ms": committed_ms - request_started_ms,
+                        "retrieval_ms": retrieval.result.elapsed_ms,
+                        "query_vector_ms": retrieval.result.query_vector_ms,
+                        "ann_ms": retrieval.result.ann_ms,
+                        "controller_ms": retrieval.controller_elapsed_ms,
+                        "generation_elapsed_to_failure_ms": failed_ms - generation_started_ms,
+                        "local_tool_wall_ms": tool_wall_ms,
+                    },
+                    "retrieval": {
+                        "query": retrieval.result.query,
+                        "embedding_tokens": retrieval_embedding_tokens,
+                        "accepted_embedding_tokens": retrieval.result.embedding_tokens,
+                        "cache_scope": retrieval.result.cache_scope,
+                        "cache_hit": retrieval.result.cache_hit,
+                        "calls": retrieval.retrieval_calls,
+                        "timeouts": retrieval.retrieval_timeouts,
+                        "failures": retrieval.retrieval_failures,
+                    },
+                    "controller": {
+                        "calls": retrieval.controller_calls,
+                        "timeouts": retrieval.controller_timeouts,
+                        "failures": retrieval.controller_failures,
+                        "elapsed_ms": retrieval.controller_elapsed_ms,
+                        "cancellations": retrieval.trigger_cancellations,
+                        "unpriced_cancellations": retrieval.unpriced_trigger_cancellations,
+                    },
+                    "reuse": {
+                        "mode": reuse_mode,
+                        "evidence_reuses": retrieval.evidence_reuses,
+                        "evidence_revalidations": retrieval.evidence_revalidations,
+                        "commit_fallbacks": retrieval.commit_fallbacks,
+                        "stale_discards": retrieval.stale_discards,
+                        "retrieval_cancellations": retrieval.retrieval_cancellations,
+                    },
+                    "persistence": {
+                        "status": "not_started",
+                        "elapsed_ms": None,
+                        "compression_calls": None,
+                        "summary_accounting_complete": None,
+                    },
+                    "tool_traces": tool_traces,
+                    "usage": asdict(known_usage),
+                    "estimated_cost_usd": {
+                        "model": known_model_usd,
+                        "query_embedding": embedding_usd,
+                        "total": known_model_usd + embedding_usd,
+                        "accounting_complete": False,
+                        "known_cost_lower_bound": known_lower_bound,
+                        "unpriced_generation_timeout_calls": int(timed_out),
+                        "unpriced_generation_failure_calls": unpriced_generation_failures,
+                        "unpriced_cancelled_controller_calls": (
+                            retrieval.unpriced_trigger_cancellations
+                        ),
+                        "unpriced_cancelled_retrieval_calls": (retrieval.retrieval_cancellations),
+                        "unpriced_controller_timeout_calls": retrieval.controller_timeouts,
+                        "unpriced_controller_failure_calls": retrieval.controller_failures,
+                        "unpriced_retrieval_timeout_calls": retrieval.retrieval_timeouts,
+                        "unpriced_retrieval_failure_calls": retrieval.retrieval_failures,
+                        "unpriced_local_tool_calls": unpriced_local_tools,
+                        "unpriced_post_answer_persistence": False,
+                        "unpriced_summary_timeout_calls": 0,
+                    },
+                }
+            )
+
         try:
             try:
                 async with asyncio.timeout(self.settings.answer_timeout_s):
@@ -792,8 +897,7 @@ class RagRuntime:
                             answer_completed_ms = time.perf_counter() * 1000
                             sources = self._merge_tool_sources(sources, tool_traces)
                             tool_embedding_tokens = sum(
-                                int(trace.get("embedding_tokens") or 0)
-                                for trace in tool_traces
+                                int(trace.get("embedding_tokens") or 0) for trace in tool_traces
                             )
                             incomplete_tool_traces = [
                                 trace
@@ -808,9 +912,7 @@ class RagRuntime:
                             ready_usage = Usage()
                             ready_usage.add(retrieval.controller_usage)
                             ready_usage.add(agent_usage)
-                            ready_model_usd = model_cost(
-                                ready_usage, self.settings
-                            ).total_usd
+                            ready_model_usd = model_cost(ready_usage, self.settings).total_usd
                             await send(
                                 {
                                     "type": "answer.ready",
@@ -826,9 +928,7 @@ class RagRuntime:
                                             else None
                                         ),
                                         "total_response_ms": (answer_completed_ms - committed_ms),
-                                        "accepted_retrieval_lead_at_commit_ms": (
-                                            accepted_lead_ms
-                                        ),
+                                        "accepted_retrieval_lead_at_commit_ms": (accepted_lead_ms),
                                         "accepted_candidate_retrieval_lead_ms": (
                                             accepted_candidate_lead_ms
                                         ),
@@ -856,6 +956,7 @@ class RagRuntime:
                             )
                         else:
                             if event["type"] == "agent.tool_started":
+                                tool_attempt_count += 1
                                 tool_started_ms[str(event.get("tool_call_id", "unknown"))] = (
                                     time.perf_counter() * 1000
                                 )
@@ -870,7 +971,19 @@ class RagRuntime:
                                 {**event, "run_id": run_id, "turn_id": turn_id, "path": path}
                             )
             except TimeoutError:
+                await write_generation_failure(
+                    error_type="TimeoutError",
+                    message="grounded answer timed out",
+                    timed_out=True,
+                )
                 raise RuntimeError("grounded answer timed out") from None
+            except Exception as exc:
+                await write_generation_failure(
+                    error_type=type(exc).__name__,
+                    message=str(exc) or "grounded answer failed",
+                    timed_out=False,
+                )
+                raise
 
             persistence_started_ms = time.perf_counter() * 1000
             persistence_status = "in_progress"
@@ -888,6 +1001,12 @@ class RagRuntime:
                         elif event["type"] == "agent.persisted":
                             persistence_usage = event["usage"]
                             compression_calls = int(event["compression_calls"])
+                            summary_accounting_complete = (
+                                event.get("summary_accounting_complete") is True
+                            )
+                            unpriced_summary_timeout_calls = int(
+                                event.get("unpriced_summary_timeout_calls") or 0
+                            )
                             persistence_status = "completed"
                         else:
                             raise RuntimeError(
@@ -925,19 +1044,17 @@ class RagRuntime:
         usage.add(persistence_usage)
         model_usd = model_cost(usage, self.settings).total_usd
         embedding_tokens = retrieval_embedding_tokens + tool_embedding_tokens
-        embedding_usd = (
-            embedding_tokens * self.settings.embedding_input_per_million / 1_000_000
-        )
+        embedding_usd = embedding_tokens * self.settings.embedding_input_per_million / 1_000_000
         accounting_complete = (
-            retrieval.trigger_cancellations == 0
+            retrieval.unpriced_trigger_cancellations == 0
             and retrieval.retrieval_cancellations == 0
             and retrieval.controller_timeouts == 0
             and retrieval.controller_failures == 0
             and retrieval.retrieval_timeouts == 0
             and retrieval.retrieval_failures == 0
-            and retrieval.endpoint_failures == 0
             and not incomplete_tool_traces
             and persistence_status == "completed"
+            and summary_accounting_complete
         )
         timing = {
             "submit_to_first_token_ms": (
@@ -991,6 +1108,7 @@ class RagRuntime:
                 "ready_ms": retrieval.retrieval_ready_ms,
                 "calls": retrieval.retrieval_calls,
                 "raw_candidate_calls": retrieval.raw_retrieval_calls,
+                "settled_draft_retrievals": retrieval.settled_draft_retrievals,
                 "timeouts": retrieval.retrieval_timeouts,
                 "failures": retrieval.retrieval_failures,
                 "first_speculative_started_ms": retrieval.first_speculative_started_ms,
@@ -1005,6 +1123,7 @@ class RagRuntime:
                 "failures": retrieval.controller_failures,
                 "elapsed_ms": retrieval.controller_elapsed_ms,
                 "cancellations": retrieval.trigger_cancellations,
+                "unpriced_cancellations": retrieval.unpriced_trigger_cancellations,
             },
             "reuse": {
                 "mode": reuse_mode,
@@ -1013,12 +1132,13 @@ class RagRuntime:
                 "commit_fallbacks": retrieval.commit_fallbacks,
                 "stale_discards": retrieval.stale_discards,
                 "retrieval_cancellations": retrieval.retrieval_cancellations,
-                "endpoint_failures": retrieval.endpoint_failures,
             },
             "persistence": {
                 "status": persistence_status,
                 "elapsed_ms": timing["post_answer_persistence_ms"],
                 "compression_calls": compression_calls,
+                "summary_accounting_complete": summary_accounting_complete,
+                "unpriced_summary_timeout_calls": unpriced_summary_timeout_calls,
             },
             "tool_traces": tool_traces,
             "usage": asdict(usage),
@@ -1027,15 +1147,15 @@ class RagRuntime:
                 "query_embedding": embedding_usd,
                 "total": model_usd + embedding_usd,
                 "accounting_complete": accounting_complete,
-                "unpriced_cancelled_controller_calls": retrieval.trigger_cancellations,
+                "unpriced_cancelled_controller_calls": (retrieval.unpriced_trigger_cancellations),
                 "unpriced_cancelled_retrieval_calls": retrieval.retrieval_cancellations,
                 "unpriced_controller_timeout_calls": retrieval.controller_timeouts,
                 "unpriced_controller_failure_calls": retrieval.controller_failures,
                 "unpriced_retrieval_timeout_calls": retrieval.retrieval_timeouts,
                 "unpriced_retrieval_failure_calls": retrieval.retrieval_failures,
-                "unpriced_endpoint_failure_calls": retrieval.endpoint_failures,
                 "unpriced_local_tool_calls": len(incomplete_tool_traces),
                 "unpriced_post_answer_persistence": persistence_status != "completed",
+                "unpriced_summary_timeout_calls": unpriced_summary_timeout_calls,
             },
         }
         await self.logger.write(record)
@@ -1094,9 +1214,7 @@ class RagRuntime:
             and retrieval.accepted_ready_before_commit
         ):
             return (
-                "precommit_revalidated"
-                if retrieval.evidence_revalidations
-                else "precommit_exact"
+                "precommit_revalidated" if retrieval.evidence_revalidations else "precommit_exact"
             )
         if (
             path == "stream"
@@ -1106,7 +1224,7 @@ class RagRuntime:
             return "presubmit_retrieval_revalidated_at_commit"
         if path == "stream" and retrieval.accepted_from_fallback is False:
             return "inflight_completed_postcommit"
-        return "commit_endpoint"
+        return "committed_text_retrieval"
 
     def _schedule_channel_cleanup(self, key: str, delay_s: float = 300.0) -> None:
         async def cleanup() -> None:
@@ -1139,6 +1257,7 @@ class RagRuntime:
             self._prune_terminal_turns_locked()
 
     async def cancel_turn(self, turn_id: str) -> None:
+        self._validate_turn_id(turn_id)
         async with self._turn_lock:
             pending = self.terminal_turns.get(turn_id)
             if pending is not None and not pending.started:

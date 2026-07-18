@@ -13,8 +13,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from app.config import settings
+from app.fingerprints import backend_source_sha256, config_sha256
+
 ROOT = Path(__file__).resolve().parents[1]
-CITATION_RE = re.compile(r"\[([^\]\s]+)::c\d{4}\]")
+CITATION_RE = re.compile(r"\[([^\]\s]+::c\d{4})\]")
 CLAUSE_SPLIT_RE = re.compile(r"[.!?;:\n]+|\bbut\b|\bhowever\b|,", re.IGNORECASE)
 ABSTENTION_PATTERNS = tuple(
     re.compile(pattern)
@@ -42,6 +45,19 @@ NON_ABSTENTION_PATTERNS = tuple(
 )
 ADJUDICATION_LABELS = {"perfect", "acceptable", "missing", "incorrect"}
 FREEZE_DOMAIN = b"typed-streamrag-eval-freeze-v1\0"
+RELATION_PAIRS = (
+    ("smaller", "larger"),
+    ("lower", "higher"),
+    ("less", "more"),
+    ("fewer", "more"),
+    ("earlier", "later"),
+    ("before", "after"),
+    ("older", "younger"),
+    ("shorter", "longer"),
+    ("worse", "better"),
+    ("worst", "best"),
+    ("least", "most"),
+)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -54,6 +70,20 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _integer(value: Any, default: int = -1) -> int:
+    try:
+        return int(value)
+    except TypeError, ValueError:
+        return default
+
+
+def _number(value: Any, default: float = 1.0) -> float:
+    try:
+        return float(value)
+    except TypeError, ValueError:
+        return default
 
 
 def read_manifest(path: Path) -> dict[str, Any]:
@@ -140,9 +170,22 @@ def validate_run_integrity(
         "required_total_path_runs": 20,
         "required_warmup_repetitions": 0,
         "required_measured_repetitions": 1,
+        "required_words_per_minute": 70.0,
+        "required_post_typing_dwell_ms": 5000.0,
+        "required_settled_draft_delay_ms": 500,
+        "required_max_typing_drift_ms": 100.0,
+        "required_case_deadline_s": 45.0,
     }
     if protocol_gate != required_protocol:
         issues.append("manifest preregistered protocol contract is invalid")
+    if (
+        float(manifest.get("words_per_minute") or -1) != 70.0
+        or float(manifest.get("post_typing_dwell_ms") or -1) != 5000.0
+        or float(manifest.get("settled_draft_delay_ms") or -1) != 500.0
+        or float(manifest.get("max_typing_drift_ms") or -1) != 100.0
+        or float(manifest.get("case_deadline_s") or -1) != 45.0
+    ):
+        issues.append("manifest typed-input timing contract is invalid")
     for gate_name in (
         "preregistered_protocol_gate",
         "warmup_gate",
@@ -184,9 +227,16 @@ def validate_run_integrity(
     statuses = manifest.get("data_status")
     statuses = statuses if isinstance(statuses, dict) else {}
     required_identity_fields = {
+        "approval_status",
+        "backend_source_sha256",
+        "config_hash",
+        "current_index_source_sha256",
+        "dataset_checksums_valid",
+        "dataset_sha256",
         "model",
         "embedding_model",
         "reasoning_effort",
+        "settled_draft_delay_ms",
         "trigger_reasoning_effort",
         "summary_reasoning_effort",
         "service_tier",
@@ -196,16 +246,38 @@ def validate_run_integrity(
         "freeze_id",
         "documents_sha256",
         "index_checksum",
+        "index_matches_current_corpus",
+        "index_metadata_ready",
+        "index_source_sha256",
+        "index_version",
+        "indexed_chunks",
+        "indexed_desired_chunks",
     }
     compared_fields = set(manifest.get("compared_status_fields") or [])
     if not required_identity_fields <= compared_fields:
         issues.append("manifest does not compare every required model/data/index identity")
+    expected_backend_source = backend_source_sha256(ROOT)
+    expected_config = config_sha256(settings)
     for path in ("naive", "stream"):
         status = statuses.get(path)
         if not isinstance(status, dict) or status.get("approval_status") != "approved_frozen":
             issues.append(f"{path} status is not approved_frozen")
         elif any(status.get(field) is None for field in required_identity_fields):
             issues.append(f"{path} status is missing required model/data/index identities")
+        elif status.get("backend_source_sha256") != expected_backend_source:
+            issues.append(f"{path} backend source does not match the current application tree")
+        elif status.get("config_hash") != expected_config:
+            issues.append(f"{path} runtime configuration does not match the current scorer")
+        elif (
+            status.get("dataset_checksums_valid") is not True
+            or status.get("index_metadata_ready") is not True
+            or status.get("index_matches_current_corpus") is not True
+            or _integer(status.get("indexed_chunks"), 0) <= 0
+            or _integer(status.get("indexed_chunks"), 0)
+            != _integer(status.get("indexed_desired_chunks"))
+            or status.get("index_source_sha256") != status.get("current_index_source_sha256")
+        ):
+            issues.append(f"{path} status does not prove a complete current index")
     if all(isinstance(statuses.get(path), dict) for path in ("naive", "stream")):
         identity_mismatches = [
             field
@@ -214,6 +286,27 @@ def validate_run_integrity(
         ]
         if identity_mismatches:
             issues.append(f"backend identity mismatch: {sorted(identity_mismatches)}")
+    path_urls = manifest.get("path_urls")
+    path_urls = path_urls if isinstance(path_urls, dict) else {}
+    instance_ids = manifest.get("backend_instance_ids")
+    instance_ids = instance_ids if isinstance(instance_ids, dict) else {}
+    if (
+        not str(path_urls.get("naive") or "")
+        or not str(path_urls.get("stream") or "")
+        or str(path_urls.get("naive")).rstrip("/") == str(path_urls.get("stream")).rstrip("/")
+    ):
+        issues.append("manifest does not bind distinct service URLs")
+    if (
+        not str(instance_ids.get("naive") or "")
+        or not str(instance_ids.get("stream") or "")
+        or instance_ids.get("naive") == instance_ids.get("stream")
+        or any(
+            isinstance(statuses.get(path), dict)
+            and statuses[path].get("instance_id") != instance_ids.get(path)
+            for path in ("naive", "stream")
+        )
+    ):
+        issues.append("manifest does not bind two matching, distinct backend instances")
 
     try:
         query_path = resolve_manifest_path(manifest_path, manifest.get("queries"))
@@ -306,8 +399,6 @@ def validate_run_integrity(
         issues.append(f"prediction query payload mismatch: {sorted(set(query_mismatches))[:10]}")
 
     run_tag = str(manifest.get("run_tag") or "")
-    path_urls = manifest.get("path_urls")
-    path_urls = path_urls if isinstance(path_urls, dict) else {}
     provenance_mismatches = []
     for row in rows:
         path = str(row.get("path"))
@@ -330,6 +421,8 @@ def validate_run_integrity(
     max_typing_drift_ms = float(manifest.get("max_typing_drift_ms") or -1)
     drift_violations: list[tuple[str, int, str]] = []
     malformed_timing: list[tuple[str, int, str]] = []
+    malformed_dwell: list[tuple[str, int, str]] = []
+    malformed_final_snapshots: list[tuple[str, int, str]] = []
     snapshot_transport_errors = 0
     for row in completed_rows:
         key = (str(row.get("id")), int(row.get("repetition") or 0), str(row.get("path")))
@@ -342,6 +435,12 @@ def validate_run_integrity(
             actual = float(typing["actual_commit_offset_ms"])
             recorded_drift = float(typing["commit_drift_ms"])
             row_tolerance = float(typing["max_allowed_drift_ms"])
+            typing_duration = float(typing["typing_duration_ms"])
+            dwell = float(typing["post_typing_dwell_ms"])
+            simulated_duration = float(typing["simulated_duration_ms"])
+            words_per_minute = float(typing["words_per_minute"])
+            snapshot_interval_ms = int(typing["snapshot_interval_ms"])
+            settled_draft_delay_ms = int(typing["settled_draft_delay_ms"])
         except KeyError, TypeError, ValueError:
             malformed_timing.append(key)
             continue
@@ -353,6 +452,15 @@ def validate_run_integrity(
             or abs(recorded_drift) > max_typing_drift_ms
         ):
             drift_violations.append(key)
+        if (
+            not math.isclose(words_per_minute, 70.0, abs_tol=1e-6)
+            or not math.isclose(dwell, 5000.0, abs_tol=1e-6)
+            or snapshot_interval_ms != 400
+            or settled_draft_delay_ms != 500
+            or not math.isclose(typing_duration + dwell, planned, abs_tol=1.0)
+            or not math.isclose(simulated_duration, planned, abs_tol=1.0)
+        ):
+            malformed_dwell.append(key)
         row_snapshot_errors = int(row.get("snapshot_transport_errors") or 0)
         snapshot_transport_errors += row_snapshot_errors
         schedules = row.get("snapshot_schedule")
@@ -362,10 +470,73 @@ def validate_run_integrity(
             for schedule in schedules
         ):
             snapshot_transport_errors += 1
+        elif row.get("path") == "naive" and schedules:
+            malformed_final_snapshots.append(key)
+        elif row.get("path") == "stream":
+            query = str(row.get("query") or "").strip()
+            exact_snapshots = []
+            for schedule in schedules:
+                try:
+                    character_count = int(schedule.get("character_count") or -1)
+                except TypeError, ValueError:
+                    continue
+                if schedule.get("is_final") is True and character_count == len(query):
+                    exact_snapshots.append(schedule)
+            if (
+                len(exact_snapshots) != 1
+                or exact_snapshots[0].get("transport_status") != "completed"
+                or row.get("settled_final_snapshot_observed") is not True
+            ):
+                malformed_final_snapshots.append(key)
+            else:
+                try:
+                    final_offset = float(exact_snapshots[0].get("planned_offset_ms") or -1)
+                except TypeError, ValueError:
+                    final_offset = -1
+                if not typing_duration <= final_offset < planned:
+                    malformed_final_snapshots.append(key)
+                exact_revision = _integer(exact_snapshots[0].get("revision"))
+                expected_query = str(row.get("query") or "").strip()
+                settled = any(
+                    isinstance(event, dict)
+                    and event.get("type") == "draft.settled"
+                    and _integer(event.get("revision")) == exact_revision
+                    and event.get("query") == expected_query
+                    and event.get("state") in {"starting", "in_flight", "ready"}
+                    and event.get("benchmark_offset_from_commit_ms") is not None
+                    and math.isfinite(
+                        _number(event.get("benchmark_offset_from_commit_ms"), math.inf)
+                    )
+                    and _number(event.get("benchmark_offset_from_commit_ms"), math.inf) <= 0
+                    for event in row.get("trace_events", [])
+                )
+                retrieval_started = any(
+                    isinstance(event, dict)
+                    and event.get("type") == "retrieval.started"
+                    and _integer(event.get("revision")) == exact_revision
+                    and event.get("query") == expected_query
+                    and event.get("benchmark_offset_from_commit_ms") is not None
+                    and math.isfinite(
+                        _number(event.get("benchmark_offset_from_commit_ms"), math.inf)
+                    )
+                    and _number(event.get("benchmark_offset_from_commit_ms"), math.inf) <= 0
+                    for event in row.get("trace_events", [])
+                )
+                if not settled or not retrieval_started:
+                    malformed_final_snapshots.append(key)
     if malformed_timing:
         issues.append(f"prediction rows have malformed typing timing: {malformed_timing[:10]}")
     if drift_violations:
         issues.append(f"prediction rows exceed or misstate typing drift: {drift_violations[:10]}")
+    if malformed_dwell:
+        issues.append(
+            f"prediction rows violate the fixed typing/dwell contract: {malformed_dwell[:10]}"
+        )
+    if malformed_final_snapshots:
+        issues.append(
+            "prediction rows violate path-specific snapshot scheduling: "
+            f"{malformed_final_snapshots[:10]}"
+        )
     if snapshot_transport_errors:
         issues.append(
             f"prediction rows record {snapshot_transport_errors} snapshot transport error(s)"
@@ -495,11 +666,28 @@ def read_adjudications(path: Path) -> dict[tuple[str, int, str], dict[str, Any]]
             raise ValueError(f"invalid adjudication label: {label!r}")
         if not str(row.get("reviewer", "")).strip():
             raise ValueError("manual adjudication requires a reviewer")
+        prediction_digest = str(row.get("prediction_sha256", ""))
+        if len(prediction_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in prediction_digest
+        ):
+            raise ValueError("manual adjudication requires prediction_sha256")
         key = (str(row["id"]), int(row["repetition"]), str(row["path"]))
         if key in adjudications:
             raise ValueError(f"duplicate adjudication: {key}")
         adjudications[key] = row
     return adjudications
+
+
+def prediction_sha256(row: dict[str, Any]) -> str:
+    """Bind a human label to the exact prediction row that was reviewed."""
+
+    payload = json.dumps(
+        row,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def validate_adjudication_integrity(
@@ -515,6 +703,16 @@ def validate_adjudication_integrity(
     observed_keys = set(adjudications)
     missing = sorted(expected_keys - observed_keys)
     extra = sorted(observed_keys - expected_keys)
+    rows_by_key = {
+        (str(row.get("id")), int(row.get("repetition") or 0), str(row.get("path"))): row
+        for row in rows
+        if "error" not in row
+    }
+    mismatched_predictions = sorted(
+        key
+        for key in expected_keys & observed_keys
+        if str(adjudications[key].get("prediction_sha256")) != prediction_sha256(rows_by_key[key])
+    )
     issues: list[str] = []
     resolved_path: str | None = None
     digest: str | None = None
@@ -539,6 +737,10 @@ def validate_adjudication_integrity(
         issues.append(f"missing adjudication keys: {missing[:10]}")
     if extra:
         issues.append(f"unexpected adjudication keys: {extra[:10]}")
+    if mismatched_predictions:
+        issues.append(
+            f"adjudications do not match current prediction rows: {mismatched_predictions[:10]}"
+        )
     return {
         "status": "complete" if not issues else "missing_or_incomplete",
         "path": resolved_path,
@@ -547,6 +749,7 @@ def validate_adjudication_integrity(
         "observed_keys": len(observed_keys),
         "missing_keys": len(missing),
         "extra_keys": len(extra),
+        "mismatched_prediction_hashes": len(mismatched_predictions),
         "issues": issues,
     }
 
@@ -554,12 +757,9 @@ def validate_adjudication_integrity(
 def automatic_completeness(
     *,
     failures: int,
-    accounting_incomplete: int,
     run_integrity: dict[str, Any],
 ) -> bool:
-    return (
-        failures == 0 and accounting_incomplete == 0 and run_integrity.get("status") == "complete"
-    )
+    return failures == 0 and run_integrity.get("status") == "complete"
 
 
 def normalize(value: str) -> str:
@@ -594,7 +794,28 @@ def false_premise_rejection_detected(answer: str) -> bool:
     )
 
 
-def candidate_asserted(answer: str, candidate: str) -> bool:
+def relation_contradicted(clause: str, question: str) -> bool:
+    """Reject a candidate asserted with the opposite queried relation."""
+
+    normalized_question = normalize(question)
+    for first, second in RELATION_PAIRS:
+        first_asked = _contains_phrase(normalized_question, first)
+        second_asked = _contains_phrase(normalized_question, second)
+        if first_asked == second_asked:
+            continue
+        expected, opposite = (first, second) if first_asked else (second, first)
+        expected_negated = re.search(
+            rf"\b(?:no|not|never)\b(?:\s+[a-z0-9]+){{0,2}}\s+{re.escape(expected)}\b",
+            clause,
+        )
+        if expected_negated:
+            return True
+        if _contains_phrase(clause, opposite) and not _contains_phrase(clause, expected):
+            return True
+    return False
+
+
+def candidate_asserted(answer: str, candidate: str, question: str = "") -> bool:
     expected = normalize(candidate)
     if not expected:
         return False
@@ -618,27 +839,36 @@ def candidate_asserted(answer: str, candidate: str) -> bool:
             rf"(?: [a-z0-9]+){{0,4}} {escaped}\b",
             clause,
         )
-        if not negated_before and not negated_after and not mere_mention:
+        if (
+            not negated_before
+            and not negated_after
+            and not mere_mention
+            and not relation_contradicted(clause, question)
+        ):
             return True
     return False
 
 
-def expected_hit(answer: str, gold: dict[str, Any]) -> bool:
+def expected_hit(answer: str, gold: dict[str, Any], question: str = "") -> bool:
     is_false_premise = normalize(gold["answer"]) == "invalid question"
     if is_false_premise:
         return false_premise_rejection_detected(answer)
     candidates = [gold["answer"], *gold.get("alt_answers", [])]
     for candidate in candidates:
         parts = [part for part in candidate.split(",") if normalize(part)]
-        if len(parts) > 1 and all(candidate_asserted(answer, part) for part in parts):
+        if len(parts) > 1 and all(candidate_asserted(answer, part, question) for part in parts):
             return True
-        if candidate_asserted(answer, candidate):
+        if candidate_asserted(answer, candidate, question):
             return True
     return False
 
 
-def cited_doc_ids(answer: str) -> set[str]:
+def cited_chunk_ids(answer: str) -> set[str]:
     return {match.group(1) for match in CITATION_RE.finditer(answer)}
+
+
+def cited_doc_ids(chunk_ids: set[str]) -> set[str]:
+    return {chunk_id.rsplit("::c", 1)[0] for chunk_id in chunk_ids}
 
 
 def percentile(values: list[float], fraction: float) -> float | None:
@@ -687,13 +917,26 @@ def annotate(
         answer = str(row.get("answer", ""))
         gold = gold_by_id.get(str(row.get("id", "")))
         row["abstained"] = "error" not in row and abstention_detected(answer)
-        row["false_premise_rejected"] = (
-            "error" not in row and false_premise_rejection_detected(answer)
+        row["false_premise_rejected"] = "error" not in row and false_premise_rejection_detected(
+            answer
         )
-        row["expected_hit"] = bool(gold and "error" not in row and expected_hit(answer, gold))
-        row["cited_doc_ids"] = sorted(cited_doc_ids(answer))
-        row["has_citation_marker"] = bool(row["cited_doc_ids"])
-        row["cited_expected_hit"] = row["expected_hit"] and row["has_citation_marker"]
+        row["expected_hit"] = bool(
+            gold and "error" not in row and expected_hit(answer, gold, str(row.get("query", "")))
+        )
+        cited_chunks = cited_chunk_ids(answer)
+        source_chunks = {
+            str(source.get("chunk_id"))
+            for source in row.get("sources", [])
+            if source.get("chunk_id")
+        }
+        valid_chunks = cited_chunks & source_chunks
+        row["cited_chunk_ids"] = sorted(cited_chunks)
+        row["valid_cited_chunk_ids"] = sorted(valid_chunks)
+        row["invalid_cited_chunk_ids"] = sorted(cited_chunks - source_chunks)
+        row["cited_doc_ids"] = sorted(cited_doc_ids(valid_chunks))
+        row["has_citation_marker"] = bool(cited_chunks)
+        row["has_valid_citation"] = bool(valid_chunks)
+        row["cited_expected_hit"] = row["expected_hit"] and row["has_valid_citation"]
         supporting = set(gold.get("supporting_doc_ids", []) if gold else [])
         supporting.update(gold.get("acceptable_supporting_doc_ids", []) if gold else [])
         row["support_evaluable"] = bool(supporting)
@@ -706,7 +949,11 @@ def annotate(
         adjudication = adjudications.get(
             (str(row.get("id", "")), int(row.get("repetition", 0)), str(row.get("path", "")))
         )
-        row["manual_adjudication"] = adjudication.get("label") if adjudication else None
+        row["manual_adjudication"] = (
+            adjudication.get("label")
+            if adjudication and adjudication.get("prediction_sha256") == prediction_sha256(raw)
+            else None
+        )
         row["word_count_bucket"] = word_bucket(row)
         annotated.append(row)
     return annotated
@@ -722,8 +969,7 @@ def path_summary(items: list[dict[str, Any]], gold_by_id: dict[str, dict[str, An
     totals = [float(item["timing"]["total_response_ms"]) for item in completed]
     retrieval = [float(item["timing"].get("retrieval_ms") or 0) for item in completed]
     lead = [
-        float(item["timing"].get("accepted_retrieval_lead_at_commit_ms") or 0)
-        for item in completed
+        float(item["timing"].get("accepted_retrieval_lead_at_commit_ms") or 0) for item in completed
     ]
     positive_lead = [value for value in lead if value > 0]
     candidate_lead = [
@@ -765,10 +1011,6 @@ def path_summary(items: list[dict[str, Any]], gold_by_id: dict[str, dict[str, An
         int(item["estimated_cost_usd"].get("unpriced_retrieval_failure_calls") or 0)
         for item in completed
     )
-    unpriced_endpoint_failures = sum(
-        int(item["estimated_cost_usd"].get("unpriced_endpoint_failure_calls") or 0)
-        for item in completed
-    )
     unpriced_local_tool_calls = sum(
         int(item["estimated_cost_usd"].get("unpriced_local_tool_calls") or 0) for item in completed
     )
@@ -801,6 +1043,9 @@ def path_summary(items: list[dict[str, Any]], gold_by_id: dict[str, dict[str, An
         "citation_marker_rate": (
             sum(bool(item["has_citation_marker"]) for item in items) / len(items) if items else None
         ),
+        "valid_citation_rate": (
+            sum(bool(item["has_valid_citation"]) for item in items) / len(items) if items else None
+        ),
         "cited_expected_answer_rate": (
             sum(bool(item["cited_expected_hit"]) for item in items) / len(items) if items else None
         ),
@@ -829,8 +1074,7 @@ def path_summary(items: list[dict[str, Any]], gold_by_id: dict[str, dict[str, An
             ),
         },
         "false_premise_rejection_rate": (
-            sum(bool(item["false_premise_rejected"]) for item in false_premise)
-            / len(false_premise)
+            sum(bool(item["false_premise_rejected"]) for item in false_premise) / len(false_premise)
             if false_premise
             else None
         ),
@@ -874,8 +1118,8 @@ def path_summary(items: list[dict[str, Any]], gold_by_id: dict[str, dict[str, An
         ),
         "mean_input_tokens": mean([float(item["usage"]["input_tokens"]) for item in completed]),
         "mean_output_tokens": mean([float(item["usage"]["output_tokens"]) for item in completed]),
-        "mean_calls": mean(calls),
-        "total_model_api_calls": sum(calls),
+        "mean_usage_accounted_model_calls": mean(calls),
+        "usage_accounted_model_calls": sum(calls),
         "mean_controller_calls": mean([float(value) for value in controller_calls]),
         "total_controller_calls": sum(controller_calls),
         "mean_retrieval_calls": mean([float(value) for value in retrieval_calls]),
@@ -901,7 +1145,6 @@ def path_summary(items: list[dict[str, Any]], gold_by_id: dict[str, dict[str, An
         "unpriced_controller_failure_calls": unpriced_controller_failures,
         "unpriced_retrieval_timeout_calls": unpriced_retrieval_timeouts,
         "unpriced_retrieval_failure_calls": unpriced_retrieval_failures,
-        "unpriced_endpoint_failure_calls": unpriced_endpoint_failures,
         "unpriced_local_tool_calls": unpriced_local_tool_calls,
         "cost_metric_status": (
             "complete"
@@ -978,7 +1221,7 @@ def paired_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "cost_accounting_complete_pair_rate": (
             len(accounting_complete_pairs) / len(complete_pairs) if complete_pairs else None
         ),
-        "mean_stream_minus_naive_calls": mean(call_delta),
+        "mean_stream_minus_naive_usage_accounted_calls": mean(call_delta),
         "mean_stream_minus_naive_accuracy": mean(accuracy_delta),
         "accuracy_pairs": {
             "stream_only_correct": sum(value > 0 for value in accuracy_delta),
@@ -1060,7 +1303,6 @@ def summarize(
     )
     final_completeness = automatic_completeness(
         failures=failures,
-        accounting_incomplete=accounting_incomplete,
         run_integrity=run_integrity,
     )
     return {
@@ -1068,15 +1310,20 @@ def summarize(
         "scorer_sha256": sha256_file(Path(__file__).resolve()),
         "metric_notes": {
             "latency_delta_sign": "negative stream-minus-naive values favor StreamRAG",
-            "accuracy": "normalized expected-answer/alias containment; failures score incorrect",
+            "accuracy": (
+                "normalized expected-answer/alias containment with a conservative queried-"
+                "relation contradiction guard; failures score incorrect; semantic correctness "
+                "still requires prediction-bound manual adjudication"
+            ),
             "citation_marker_rate": (
                 "checks citation syntax only, not whether the source supports the claim"
             ),
             "supporting_doc_citation_rate": (
-                "citation resolves to a scorer-only gold supporting/acceptable document ID"
+                "an exact cited chunk exists in the prediction's retrieved sources and resolves "
+                "to a scorer-only gold supporting/acceptable document ID"
             ),
             "final_grounding_gate": (
-                "automatic scoring is final for the quick benchmark; optional manual review "
+                "automatic scoring is the required quick-benchmark gate; optional manual review "
                 "uses perfect/acceptable/missing/incorrect adjudication"
             ),
             "cost": (
@@ -1084,6 +1331,10 @@ def summarize(
                 "unpriced calls have unknown provider usage; observed totals and "
                 "minimum_mean_cost_per_output_usd are non-final lower bounds when "
                 "cost_metric_status is lower_bound_non_final"
+            ),
+            "usage_accounted_model_calls": (
+                "counts calls represented in returned provider usage; controller attempts "
+                "without returned usage are reported separately and are not silently counted"
             ),
             "throughput": "uses post-commit wall time and excludes simulated typing sleeps",
             "candidate_retrieval_lead": (
@@ -1119,9 +1370,17 @@ def summarize(
             "accounting_incomplete_outputs": accounting_incomplete,
             "adjudicated_outputs": len(adjudicated),
             "requirement": (
-                "validated gold-blind run and offline evaluation freeze, zero failures, "
-                "and complete provider accounting; manual adjudication is an optional "
-                "content-addressed extension"
+                "validated gold-blind run and offline evaluation freeze with zero failures; "
+                "provider-cost accounting and manual adjudication are independent gates"
+            ),
+        },
+        "cost_accounting_gate": {
+            "status": "complete" if accounting_incomplete == 0 else "lower_bound_non_final",
+            "completed_outputs": len(completed),
+            "accounting_incomplete_outputs": accounting_incomplete,
+            "requirement": (
+                "complete only when every completed output has provider usage for every "
+                "attempt; otherwise reported cost is an observed lower bound"
             ),
         },
         "paired": paired_summary(rows),
@@ -1174,12 +1433,15 @@ def markdown(summary: dict[str, Any]) -> str:
         "# Benchmark summary",
         "",
         "Generated from frozen predictions and scorer-only golds. Negative paired latency",
-        "deltas favor StreamRAG. Expected-string matching is preliminary; support+corr also",
-        "requires a cited supporting document. Manual CRAG-like adjudication is optional.",
+        "deltas favor StreamRAG. Automatic expected-answer/alias matching is a proxy, not a",
+        "semantic correctness judgment. Support additionally requires a valid exact-chunk",
+        "citation resolving to an acceptable gold document. Manual adjudication is optional.",
         "",
-        "| Path | Completed | Failures | Expected hit | Support+corr | Manual P/A | "
+        "| Path | Completed | Failures | Automatic match proxy | Support+valid citation | "
+        "Manual semantic P/A | "
         "Median TTFT | p95 TTFT | Median total | Pre-Send reuse | In-flight overlap | "
-        "Fallback | Calls | Cost/completed | Cost coverage | Accounting complete |",
+        "Fallback | Usage-accounted calls/output | Cost/completed | Cost coverage | "
+        "Accounting complete |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for path, values in summary["paths"].items():
@@ -1202,13 +1464,14 @@ def markdown(summary: dict[str, Any]) -> str:
             f"{display(values['p95_ttft_ms'], ' ms')} | "
             f"{display(values['median_total_ms'], ' ms')} | "
             f"{reuse} | {inflight} | {fallback} | "
-            f"{display(values['mean_calls'], '', 2)} | "
+            f"{display(values['mean_usage_accounted_model_calls'], '', 2)} | "
             f"{money(values['mean_cost_usd'])} | {cost_coverage} | {accounting_coverage} |"
         )
     gate = summary["manual_grounding_gate"]
     integrity_gate = summary["run_integrity_gate"]
     adjudication_gate = summary["adjudication_integrity_gate"]
     final_gate = summary["final_completeness_gate"]
+    cost_gate = summary["cost_accounting_gate"]
     lines.extend(
         [
             "",
@@ -1219,9 +1482,9 @@ def markdown(summary: dict[str, Any]) -> str:
             f"Adjudication integrity gate: **{adjudication_gate['status']}** "
             f"(SHA-256: {adjudication_gate.get('sha256') or 'missing'}).",
             f"Final completeness gate: **{final_gate['status']}** "
-            f"({final_gate['failures']} failures and "
-            f"{final_gate['accounting_incomplete_outputs']} accounting-incomplete outputs; "
-            "zero required).",
+            f"({final_gate['failures']} failures; zero required).",
+            f"Cost accounting gate: **{cost_gate['status']}** "
+            f"({cost_gate['accounting_incomplete_outputs']} accounting-incomplete outputs).",
         ]
     )
     paired = summary["paired"]
@@ -1243,7 +1506,7 @@ def markdown(summary: dict[str, Any]) -> str:
             f"- Mean Stream minus Naive cost (fully accounted pairs only): {paired_cost}",
             f"- Fully accounted cost pairs: {paired['cost_accounting_complete_pairs']} / "
             f"{paired['completed_pairs']}",
-            f"- Accuracy discordance: {paired['accuracy_pairs']}",
+            f"- Automatic-proxy discordance: {paired['accuracy_pairs']}",
             "",
             "## Stream evidence stages",
             "",
@@ -1251,7 +1514,7 @@ def markdown(summary: dict[str, Any]) -> str:
             "candidate. It is not accepted/safe evidence lead and not measured TTFT saved.",
             "",
             "| Stage | Runs | Median TTFT | Median accepted-safe lead | "
-            "Median / p95 candidate retrieval headroom | Accuracy |",
+            "Median / p95 candidate retrieval headroom | Automatic match proxy |",
             "|---|---:|---:|---:|---:|---:|",
         ]
     )
@@ -1272,7 +1535,8 @@ def markdown(summary: dict[str, Any]) -> str:
             "Candidate classes are heuristic/manual-review labels assigned without seeing path "
             "outputs; they are not measured stabilization points.",
             "",
-            "| Class | Pairs | Naive TTFT | Stream TTFT | Stream reuse | Extra calls |",
+            "| Class | Pairs | Naive TTFT | Stream TTFT | Stream reuse | "
+            "Extra usage-accounted calls |",
             "|---|---:|---:|---:|---:|---:|",
         ]
     )
@@ -1283,7 +1547,7 @@ def markdown(summary: dict[str, Any]) -> str:
         stream = paths.get("stream", {})
         pairs = pair_strata[class_name]
         stream_reuse = display(percent(stream.get("speculative_reuse_rate")), "%", 1)
-        extra_calls = display(pairs.get("mean_stream_minus_naive_calls"), "", 2)
+        extra_calls = display(pairs.get("mean_stream_minus_naive_usage_accounted_calls"), "", 2)
         lines.append(
             f"| {class_name} | {pairs['completed_pairs']} | "
             f"{display(naive.get('median_ttft_ms'), ' ms')} | "
@@ -1319,7 +1583,10 @@ def main() -> None:
     parser.add_argument(
         "--adjudications",
         type=Path,
-        help="manual JSONL keyed by id/repetition/path with label and reviewer",
+        help=(
+            "manual JSONL keyed by id/repetition/path with label, reviewer, and the exact "
+            "prediction_sha256 returned by prediction_sha256(row)"
+        ),
     )
     parser.add_argument(
         "--require-manual-adjudication",

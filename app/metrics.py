@@ -25,9 +25,7 @@ def model_cost(usage: Usage, settings: Settings) -> CostBreakdown:
         usage.input_tokens - usage.cache_write_tokens - usage.cached_input_tokens,
     )
     input_usd = uncached * settings.sol_input_per_million / 1_000_000
-    cache_write_usd = (
-        usage.cache_write_tokens * settings.sol_cache_write_per_million / 1_000_000
-    )
+    cache_write_usd = usage.cache_write_tokens * settings.sol_cache_write_per_million / 1_000_000
     cached_usd = usage.cached_input_tokens * settings.sol_cached_input_per_million / 1_000_000
     output_usd = usage.output_tokens * settings.sol_output_per_million / 1_000_000
     return CostBreakdown(

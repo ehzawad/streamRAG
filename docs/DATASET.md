@@ -28,8 +28,9 @@ Selected pages are cleaned of markup, script, and style content, but page text i
 never character- or token-truncated.
 
 A measured clean index used `text-embedding-3-large` at 3,072 dimensions and
-produced 1,000/1,000 points from 366,142 provider-counted embedding tokens in
-40.94 s. At the price recorded for that run, the index cost was $0.04759846.
+produced 1,000/1,000 points from 366,142 provider-counted embedding tokens.
+The final clean reproduction built both fresh isolated indexes in 94.83 seconds
+total. At the price recorded for one build, its index cost was $0.04759846.
 
 ## Selection and leakage boundary
 
@@ -43,6 +44,11 @@ fields. Test answers and supporting IDs remain in scorer-only `test_gold.jsonl`;
 the application indexes only `documents.jsonl.bz2`. The formal benchmark first
 builds a redacted inference bundle, then serves two isolated indexes from that
 bundle. The offline scorer receives gold only after predictions exist.
+
+Verification is snapshot-based rather than check-then-reread. The checksum
+manifest is parsed once, each bound file is read and hashed once, and corpus
+parsing/chunking uses the exact captured `documents.jsonl.bz2` bytes. The source
+fingerprint finalized with the index is computed from that same snapshot.
 
 Each query has a candidate `early_stabilization`, `late_stabilization`, or
 `revision_or_ambiguity` label. These labels were assigned independently of A/B
@@ -60,8 +66,20 @@ make verify-data
 
 Verification checks the manifest, loads all 250 complete documents, and exactly
 rechunks them to 1,000 points. Indexing then uses the real configured OpenAI
-embedding API. On the acceptance machine, dataset verification was sub-second and
-indexing took about 41 seconds.
+embedding API. In the final clean reproduction, verification took 1.36 seconds and
+both isolated index builds took 94.83 seconds total.
+
+Sync marks the durable index record unready before changing Qdrant, clears the
+ranked-result cache, and marks it ready only after source/checksum/version/desired-
+count metadata is committed. Per-point fingerprints include the index-pipeline
+version, so a pipeline change cannot silently reuse points built by old logic. A
+failure remains unready across restart. Before an answer, the service re-verifies
+dataset approval/checksums and requires the source fingerprint, durable/in-memory
+readiness, index version, desired count, and physical Qdrant point count to match.
+Health reports the candidate ready only when the explicit development override is
+active; approval remains fail-closed otherwise. Existing turn/answer/commit setup
+blocks sync; once maintenance is admitted, new turn work fails closed until it
+finishes.
 
 ## Optional provenance regeneration
 

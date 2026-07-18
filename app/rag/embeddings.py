@@ -27,7 +27,7 @@ class OpenAIEmbedder:
         client: AsyncOpenAI | None = None,
         *,
         timeout_s: float = 45.0,
-        max_retries: int = 1,
+        max_retries: int = 0,
     ):
         self.model = model
         self.client = client or AsyncOpenAI(timeout=timeout_s, max_retries=max_retries)

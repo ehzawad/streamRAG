@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 import tiktoken
@@ -36,6 +37,23 @@ INFERENCE_BUNDLE_REQUIRED_FILES = {
 }
 DOCUMENT_FILENAMES = ("documents.jsonl", "documents.jsonl.bz2")
 SHA256_LINE = re.compile(r"^([0-9a-f]{64})  (.+)$")
+
+
+@dataclass(frozen=True)
+class VerifiedDatasetSnapshot:
+    """Checksum-verified dataset bytes captured as one immutable sync input."""
+
+    approval_status: str
+    verified_files: tuple[tuple[str, str], ...]
+    documents_filename: str
+    documents_sha256: str
+    documents_bytes: bytes
+    serving_dataset_checksum: str
+    dataset_checksum: str
+    freeze_id: str
+
+    def checksums(self) -> dict[str, str]:
+        return dict(self.verified_files)
 
 
 def sha256_file(path: Path) -> str:
@@ -70,29 +88,27 @@ def dataset_review_status(dataset_dir: Path) -> str:
     return str(summary.get("selection", {}).get("approval_status", "unknown"))
 
 
-def verify_dataset_checksums(dataset_dir: Path) -> dict[str, str]:
-    """Verify the freeze manifest and all integrity-sensitive dataset files.
-
-    Approval is deliberately not just a mutable string in dataset_summary.json.
-    The summary itself, queries, scorer-only gold, and corpus must all be bound by
-    the checked-in SHA-256 manifest before an approved dataset can be used.
-    """
+def capture_dataset_snapshot(dataset_dir: Path) -> VerifiedDatasetSnapshot:
+    """Read and verify every bound file once, retaining the exact corpus bytes."""
     root = dataset_dir.resolve()
     manifest = root / "checksums.sha256"
     if not manifest.is_file():
         raise RuntimeError(f"dataset checksum manifest is missing: {manifest}")
 
+    manifest_bytes = manifest.read_bytes()
+    try:
+        manifest_text = manifest_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("dataset checksum manifest is not valid UTF-8") from exc
+
     entries: dict[str, str] = {}
-    for line_number, raw_line in enumerate(
-        manifest.read_text(encoding="utf-8").splitlines(), 1
-    ):
+    captured: dict[str, bytes] = {}
+    for line_number, raw_line in enumerate(manifest_text.splitlines(), 1):
         if not raw_line.strip():
             continue
         match = SHA256_LINE.fullmatch(raw_line)
         if match is None:
-            raise RuntimeError(
-                f"invalid checksum manifest line at checksums.sha256:{line_number}"
-            )
+            raise RuntimeError(f"invalid checksum manifest line at checksums.sha256:{line_number}")
         expected, name = match.groups()
         relative = Path(name)
         if relative.is_absolute() or ".." in relative.parts or name == "checksums.sha256":
@@ -106,16 +122,27 @@ def verify_dataset_checksums(dataset_dir: Path) -> dict[str, str]:
             raise RuntimeError(f"duplicate checksum manifest entry: {name}")
         if not target.is_file():
             raise RuntimeError(f"checksummed dataset file is missing: {name}")
-        actual = sha256_file(target)
+        content = target.read_bytes()
+        actual = hashlib.sha256(content).hexdigest()
         if actual != expected:
             raise RuntimeError(f"dataset checksum mismatch: {name}")
         entries[name] = actual
+        if name in {"dataset_summary.json", "inference_bundle.json", *DOCUMENT_FILENAMES}:
+            captured[name] = content
 
-    inference_path = root / "inference_bundle.json"
-    if inference_path.is_file():
+    serving_dataset_checksum = hashlib.sha256(manifest_bytes).hexdigest()
+    dataset_checksum = serving_dataset_checksum
+    freeze_id = hashlib.sha256(
+        b"typed-streamrag-eval-freeze-v1\0" + dataset_checksum.encode("ascii")
+    ).hexdigest()
+    inference_present = (root / "inference_bundle.json").is_file()
+    if inference_present != ("inference_bundle.json" in entries):
+        raise RuntimeError("inference_bundle.json presence does not match the checksum manifest")
+    inference_bytes = captured.get("inference_bundle.json")
+    if inference_bytes is not None:
         try:
-            inference = json.loads(inference_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
+            inference = json.loads(inference_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError("inference_bundle.json is invalid JSON") from exc
         if inference.get("bundle_role") != "inference_corpus":
             raise RuntimeError("inference bundle has an invalid bundle_role")
@@ -131,6 +158,8 @@ def verify_dataset_checksums(dataset_dir: Path) -> dict[str, str]:
         ).hexdigest()
         if inference.get("freeze_id") != expected_freeze_id:
             raise RuntimeError("inference bundle freeze_id does not match its evaluation manifest")
+        dataset_checksum = evaluation_checksum
+        freeze_id = expected_freeze_id
         document_name = str(inference.get("documents_filename") or "documents.jsonl")
         if document_name not in DOCUMENT_FILENAMES:
             raise RuntimeError("inference bundle has an invalid documents_filename")
@@ -145,32 +174,56 @@ def verify_dataset_checksums(dataset_dir: Path) -> dict[str, str]:
         required_files = FULL_EVALUATION_REQUIRED_FILES
     document_entries = sorted(set(entries) & set(DOCUMENT_FILENAMES))
     if len(document_entries) != 1:
+        raise RuntimeError("checksum manifest must bind exactly one documents.jsonl representation")
+    physical_documents = [name for name in DOCUMENT_FILENAMES if (root / name).is_file()]
+    if physical_documents != document_entries:
         raise RuntimeError(
-            "checksum manifest must bind exactly one documents.jsonl representation"
+            "dataset files do not match the single corpus representation in the manifest"
         )
     missing = sorted(required_files - entries.keys())
     if missing:
         raise RuntimeError(f"checksum manifest omits required files: {missing}")
-    return entries
+    try:
+        summary = json.loads(captured["dataset_summary.json"])
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("dataset_summary.json is invalid JSON") from exc
+    document_name = document_entries[0]
+    return VerifiedDatasetSnapshot(
+        approval_status=str(summary.get("selection", {}).get("approval_status", "unknown")),
+        verified_files=tuple(sorted(entries.items())),
+        documents_filename=document_name,
+        documents_sha256=entries[document_name],
+        documents_bytes=captured[document_name],
+        serving_dataset_checksum=serving_dataset_checksum,
+        dataset_checksum=dataset_checksum,
+        freeze_id=freeze_id,
+    )
 
 
-def require_dataset_approval(dataset_dir: Path, allow_unreviewed: bool) -> str:
-    verify_dataset_checksums(dataset_dir)
-    status = dataset_review_status(dataset_dir)
+def verify_dataset_checksums(dataset_dir: Path) -> dict[str, str]:
+    """Verify the freeze manifest and all integrity-sensitive dataset files."""
+    return capture_dataset_snapshot(dataset_dir).checksums()
+
+
+def require_dataset_snapshot(
+    dataset_dir: Path,
+    allow_unreviewed: bool,
+) -> VerifiedDatasetSnapshot:
+    snapshot = capture_dataset_snapshot(dataset_dir)
+    status = snapshot.approval_status
     if status != "approved_frozen" and not allow_unreviewed:
         raise RuntimeError(
             f"CRAG dataset is not human-approved/frozen. Review "
             f"{dataset_dir / 'REVIEW_SHEET.md'} first, or set "
             "ALLOW_UNREVIEWED_DATASET=1 for explicitly non-final local checks."
         )
-    return status
+    return snapshot
 
 
-def load_documents(dataset_dir: Path) -> list[SourceDocument]:
-    path = resolve_documents_path(dataset_dir)
+def _documents_from_rows(rows: Iterable[dict]) -> list[SourceDocument]:
     documents: list[SourceDocument] = []
     seen_ids: set[str] = set()
-    for row in read_jsonl(path):
+    for row in rows:
         forbidden = FORBIDDEN_DOCUMENT_KEYS & row.keys()
         if forbidden:
             raise ValueError(f"forbidden label/query keys in retrievable row: {sorted(forbidden)}")
@@ -200,6 +253,31 @@ def load_documents(dataset_dir: Path) -> list[SourceDocument]:
     return documents
 
 
+def load_snapshot_documents(snapshot: VerifiedDatasetSnapshot) -> list[SourceDocument]:
+    """Parse only the corpus bytes that were verified in ``snapshot``."""
+    content = snapshot.documents_bytes
+    if snapshot.documents_filename.endswith(".bz2"):
+        try:
+            content = bz2.decompress(content)
+        except OSError as exc:
+            raise ValueError("verified document corpus is invalid bzip2 data") from exc
+    try:
+        lines = content.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError("verified document corpus is not valid UTF-8") from exc
+
+    def rows() -> Iterable[dict]:
+        for line_number, line in enumerate(lines, 1):
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"invalid JSON at {snapshot.documents_filename}:{line_number}"
+                ) from exc
+
+    return _documents_from_rows(rows())
+
+
 def deduplicate_documents(documents: Iterable[SourceDocument]) -> list[SourceDocument]:
     unique: dict[str, SourceDocument] = {}
     for document in documents:
@@ -212,8 +290,10 @@ def chunk_documents(
     chunk_tokens: int = 400,
     overlap_tokens: int = 50,
 ) -> list[Chunk]:
-    if overlap_tokens >= chunk_tokens:
-        raise ValueError("overlap must be smaller than chunk size")
+    if chunk_tokens <= 0:
+        raise ValueError("chunk size must be positive")
+    if not 0 <= overlap_tokens < chunk_tokens:
+        raise ValueError("overlap must be non-negative and smaller than chunk size")
     encoding = tiktoken.get_encoding("cl100k_base")
     step = chunk_tokens - overlap_tokens
     chunks: list[Chunk] = []
