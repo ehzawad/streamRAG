@@ -9,10 +9,7 @@ from pathlib import Path
 
 import httpx
 
-try:
-    from scripts.crag_source import SOURCE_SHA256, SOURCE_URL
-except ModuleNotFoundError:  # Direct execution places scripts/ on sys.path.
-    from crag_source import SOURCE_SHA256, SOURCE_URL  # type: ignore[no-redef]
+from scripts.crag_source import SOURCE_SHA256, SOURCE_URL
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "data" / "raw" / "crag_official" / "crag_task_1_and_2_dev_v5.jsonl.bz2"

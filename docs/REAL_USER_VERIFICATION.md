@@ -1,157 +1,198 @@
-# Real-user and concurrency verification record
+# Real-user verification
 
-**Date:** 2026-07-18
-**Scope:** development data only; the unseen test split was not run.
+**Dataset scope:** development questions only while status is
+`candidate_pending_human_review`. No unseen test row may be used for browser
+acceptance or smoke verification.
 
-The canonical dataset remains `candidate_pending_human_review`. All retained
-answer runs use its five checksum-bound development questions only; the unseen
-test queries remain sealed and no final benchmark is claimed.
+## Required current-source acceptance
 
-## Browser surface acceptance
+Verification is complete only when all three independently deployed surfaces pass:
 
-The application was exercised on the final source with the real FastAPI/Vite,
-OpenAI, embedding, and 1,000-point Qdrant stack; no application path was mocked.
-Headed Playwright filled the development stock-holding question in Compare mode,
-held the complete draft for 5.5 seconds, and asserted that both answer panels still
-read **No answer yet** before clicking Send. Stream reported **Evidence validated
-and ready — press Send**. Network inspection showed the exact full text as dirty
-revision 1 and the same text as commit revision 2 about 5.16 seconds later, with no
-repeated unchanged snapshot. The server's locked 500 ms quiet timer, not repeated
-browser traffic, started exact-draft retrieval.
+| Surface | URL | Required behavior |
+|---|---|---|
+| Naive full-stack app | `http://127.0.0.1:8001` | usable question flow; no snapshot route/request; retrieval starts after Send |
+| Stream full-stack app | `http://127.0.0.1:8002` | changed-only snapshots; provisional readiness before Send; no answer before Send |
+| External comparison app | `http://127.0.0.1:5173` | two healthy roles; Stream-only snapshots; equal final commits; two independent answer streams |
 
-After Send, both paths answered **more than one year** with the same exact IRS
-chunk citation (`crag-global-9d22ffbe3ca22f9a9858bd6e::c0005`) and both reached
-**Persistence: Saved**. The HTTP commit was accepted in 7 ms. In this live Compare
-sample, Stream-minus-Naive TTFT was -1,087 ms and total time was -1,114 ms. The
-browser console had zero errors. A trace and the final page were captured; the
-retained screenshot is
-[`final-verified-compare.png`](../output/playwright/final-verified-compare.png).
+The services must use different Qdrant directories, SQLite databases, metrics
+logs, instance IDs, sessions, and cache scopes. The comparison client must reach
+ports 8001 and 8002 directly; no backend may dispatch the other implementation.
 
-Playwright drove the real installed Google Chrome browser, and native Computer Use
-inspected the resulting page. Event inspection confirmed exact evidence ready
-before Send, followed by `answer.ready`, `answer.completed`, and the run terminal.
+Live acceptance uses a real `OPENAI_API_KEY`, real Responses calls, real
+`text-embedding-3-large` embeddings, and real embedded-Qdrant search. Unit-test
+stubs are useful for deterministic edge cases but cannot satisfy any live-path,
+latency, correctness, cost, or reproducibility claim.
 
-Those browser timings are UI acceptance evidence, not benchmark evidence, because
-Compare mode runs both paths concurrently in one service. The authoritative A/B
-measurement uses sequential isolated services. No browser journey used an unseen
-test row.
+## Browser procedure
 
-## Clean-clone reproduction
+Use headed Playwright with the installed Google Chrome, then independently inspect
+the result with native Computer Use.
 
-The canonical clean-clone acceptance is setup, checksum verification, tests/build,
-two fresh real indexes, two isolated services, and a scored real-API smoke query.
-Its elapsed time is volatile operational evidence, not a benchmark metric.
+For Naive:
+
+1. open port 8001 and confirm the page identifies Naive;
+2. type a development question and confirm there is no snapshot request;
+3. click Send, observe immediate commit acceptance, answer/citation, persistence,
+   and a terminal event;
+4. confirm the browser console has no error.
+
+For Stream:
+
+1. open port 8002 and confirm the page identifies Stream;
+2. type the same development question, hold the completed draft for at least
+   500 ms, and confirm changed-only snapshot traffic;
+3. confirm no answer appears before Send even if evidence becomes ready;
+4. click Send and observe answer/citation, persistence, and a terminal event;
+5. edit an earlier part of a second draft and confirm stale work is not promoted.
+
+For comparison:
+
+1. open port 5173 and validate both `/v1/health` identities and contract versions;
+2. in Compare mode, hold the full draft before Send and confirm only port 8002
+   receives snapshots;
+3. confirm both answer panels still show no answer before Send;
+4. click Send and verify the exact same final text is committed independently to
+   ports 8001 and 8002;
+5. observe separate SSE lifecycles through `answer.ready`, `answer.completed`, and
+   each run terminal;
+6. exercise Cancel and New turn without freezing input controls;
+7. capture network evidence, a Chrome screenshot, console state, and the final
+   native Computer Use view.
+
+Browser timings are UI acceptance evidence, not the formal benchmark. The formal
+runner executes paths sequentially through isolated services; the comparison UI
+may commit them concurrently for a responsive side-by-side experience.
+
+## Reproducibility procedure
+
+Normal reproduction uses the committed 250-document corpus and does not download
+the upstream 705 MiB release.
 
 ```bash
+cp .env.example .env
+# Add a real OPENAI_API_KEY.
 make setup
 make verify-data
 make check
 make benchmark-dev-services-check
 make benchmark-dev-services-sync
-# terminal A: make benchmark-dev-services-serve
-# terminal B: make benchmark-smoke && make score-dev
+
+# terminal A
+make benchmark-dev-services-serve
+
+# terminal B
+make benchmark-smoke
+make score-dev
 ```
 
-The final clean reproduction completed in about 5 minutes 10 seconds: setup 2.01 s,
-checksum verification 1.36 s, tests/build about 5.4 s, both fresh real indexes
-94.83 s, the five-pair benchmark 203.91 s, scoring 0.20 s, plus service startup.
-It is comfortably inside the provider-dependent 15–20 minute envelope.
+The sync step creates one real seed index, stops it, verifies quiescence, and
+clones it to isolated service stores. Reproduction evidence must record:
 
-## Real API/index evidence already complete
+- elapsed setup, verification, index, run, and scoring times;
+- dataset, source, configuration, and service fingerprints;
+- exactly 250 documents and 1,000 physical points in each service;
+- different role/instance/state identities;
+- five dev questions and ten completed path outputs;
+- prediction and manifest hashes;
+- explicit accounting-completeness/lower-bound status.
 
-- A real OpenAI embedding build indexed 1,000/1,000 chunks using 366,142
-  `text-embedding-3-large` tokens. No fixed index wall time is claimed because it
-  varies with provider and cache state. No embedding or retrieval call was mocked.
-  The current index path captures and verifies one exact dataset snapshot, indexes
-  only those retained bytes, marks durable state unready before mutation, and
-  requires source/version/desired/physical-count agreement before answering.
-- The retained comparison used the five checksum-bound dev questions, two live
-  isolated backend processes, and real model calls. Both paths completed 5/5 at
-  100% automatic expected-answer/alias match, evidence support, valid citation,
-  supporting-document citation, and false-premise rejection. Human semantic-
-  adjudication coverage was 0%, so this is automatic-proxy parity rather than a
-  100% semantic-correctness claim.
-- The retained replay used deterministic 70-WPM typing and a fixed 5,000 ms pause
-  after typing before Send. The changed-only sampler delivered one exact full-
-  draft snapshot and sent no repeats while it remained unchanged. The server's
-  locked 500 ms timer started deterministic exact-draft retrieval; final answer
-  generation never began before Send.
-- Stream won TTFT on 5/5 pairs. Median paired TTFT/total deltas were
-  -2,167.428/-2,374.568 ms; paired p95 TTFT delta was -947.191 ms. Naive median
-  TTFT/total was 3,663.915/4,268.152 ms and Stream's was
-  1,175.745/2,047.255 ms. The five live pairs are too small to promise the same
-  ordering on every rerun.
-- Naive used 5 usage-accounted model calls, 0 controller attempts, and 5
-  retrievals; Stream used 17, 18, and 13. Both paths made zero dynamic
-  function-tool calls. Stream's observed run cost was at least $0.10140119 and
-  mean at least $0.020280238; Naive's complete total/mean was
-  $0.05899131/$0.011798262. Stream accounting was complete for 0/5 outputs and
-  Naive for 5/5, so no pair had complete accounting and no final cost comparison
-  is claimed. The run took 203.743 s. The artifact is
-  `completed_non_reportable`; no unseen query was run.
-- Stream reused completed exact-draft evidence in 5/5 cases, and all five were
-  ready before commit. Any changed commit would have taken the exact-text fallback.
-  Both paths share the exact committed-text fallback, grounded answer model, prompt, corpus,
-  embedding, and ANN policy; Stream alone adds pre-Send trigger/speculative work.
-- The retained development result and its limitations are recorded in
-  [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
+Provider latency and first-time package downloads vary. The intended full
+development reproduction remains within the user's 15–20 minute envelope, but a
+measured wall time must be reported as observed evidence, not a guarantee.
 
-## Event-loop and embedded-Qdrant probe
+## Deletion/isolation checks
 
-Embedded Qdrant exposes a synchronous local client, so all local operations run
-through one dedicated `ThreadPoolExecutor` worker. Dataset hashing/chunk loading
-and metrics-log writes are also offloaded. Remote Qdrant retains its async client.
+Architecture tests must also prove the ownership claim:
 
-`scripts/probe_qdrant_concurrency.py` exercised the application-owned local worker
-with real stored 3,072-dimensional vectors and ANN/payload reads:
+- `comparison/` production code imports no application package;
+- `shared/` imports no implementation or comparison package;
+- Naive imports `shared/` only, and Stream imports `shared/` only;
+- the Naive app imports and serves when Stream/comparison are unavailable;
+- the Stream app imports and serves when Naive/comparison are unavailable;
+- deleting the optional comparison client cannot affect either single-path UI or
+  API.
 
-- 1,000 indexed points;
-- 256 requests at client concurrency 32;
-- 0 errors and 347.431 requests/s;
-- request latency including the serialized queue: p50 91.778 ms, p95 93.449 ms,
-  max 94.185 ms;
-- event-loop lag: p50 0.291 ms, p95 1.158 ms, max 1.298 ms;
-- 50 ms event-loop-lag budget: passed.
+## Non-blocking boundary
 
-The probe deliberately does not call the embedding API: it uses real vectors
-already stored in the final local index and fails if an embedding call is
-attempted. It characterizes this machine/corpus boundary; it is not an end-to-end
-HTTP/OpenAI load test and does not justify an unlimited-concurrency production
-claim.
+FastAPI and OpenAI/PydanticAI operations are async. Embedded Qdrant's synchronous
+client runs on a dedicated worker, and dataset/log I/O is offloaded. The browser
+keeps one changed snapshot active plus one replaceable latest draft; Send aborts
+obsolete snapshot transport without waiting for it. `answer.ready` ends visible
+loading before bounded persistence, while SSE stays open for final accounting and
+the terminal event.
 
-## Non-blocking user path
+These controls support the intended local reviewer load. They are not evidence of
+production-scale concurrency; that would require an authenticated deployment and
+a separate HTTP/OpenAI load campaign.
 
-- OpenAI/PydanticAI calls use explicit async clients. Responses roles use no SDK
-  retry beneath their measured deadline; embeddings also use zero SDK retries.
-  Role-specific timeouts are 4 s trigger, 6 s retrieval, 30 s answer, and 8 s
-  summary; all post-answer persistence work shares one configured absolute lease.
-- The browser samples every 400 ms, skips unchanged text, and keeps one changed
-  snapshot request active plus one replaceable latest draft. The server owns the
-  locked 500 ms unchanged timer. Send aborts obsolete snapshot transport without
-  awaiting it. The background answer path cancels an unfinished model decision or
-  mismatched retrieval, but may await a literal-exact retrieval already in flight.
-- Send reserves the terminal turn boundary under the runtime lock before any index-
-  readiness or context await, so idle reaping and index-sync admission cannot race
-  an accepted commit setup.
-- SSE response collection is independent of input controls, and Cancel/New turn
-  remain available during work.
-- `answer.ready` carries the grounded answer and ends visible loading for each
-  requested path before bounded post-answer persistence. The stream remains open
-  for the later `answer.completed` accounting/persistence event and closes only on
-  `run.completed` or `run.error`.
-- Follow-up context reads share the post-answer session lease, so they cannot race
-  a pending save. Compaction, normal save, and raw-save fallback consume the same
-  absolute deadline. Cancellation after `answer.ready` can use only the time left
-  in that lease before propagating; it cannot create an additive timeout or hang
-  indefinitely. Idle-turn cleanup,
-  terminal-event retention, and atomic maintenance admission prevent unbounded
-  task/session growth and index mutation during live work.
+## Evidence status
 
-The grounded agent keeps privileged instructions static and sends question, query
-time, summary, and evidence as one untrusted user-role JSON object. Generation and
-summary gaps have explicit failed-ledger/unpriced counters; cost is labeled a lower
-bound whenever provider usage is unavailable.
+The current development API benchmark and index reproduction are complete for the
+source and configuration hashes recorded in their manifests:
 
-These controls make the assessment UI non-blocking under its intended local load.
-Production scaling would replace embedded Qdrant and SQLite and would require a
-separate end-to-end concurrency/load campaign.
+- seed provisioning completed in 48.28 seconds and produced 1,000 points from all
+  250 complete documents before cloning into isolated Naive and Stream stores;
+- the runner completed 5 development questions and 10 path runs in 208.13 seconds
+  by shell wall clock, with a 207.796-second finalized manifest interval, zero
+  path-output failures, and `complete` run integrity;
+- both paths scored 100% on the fixed automatic answer/alias and support/citation
+  proxies; human semantic-adjudication coverage remains 0%;
+- Stream won TTFT on 5/5 pairs, with median paired TTFT delta -1,480.697 ms
+  (-52.146%), paired p95 TTFT delta -960.058 ms, median total delta -1,678.759 ms,
+  and median evidence lead at Send 3,053.377 ms. Every observed stabilization
+  stratum favored Stream TTFT, including the one `late_stabilization` question;
+- Stream used more work (17 controller attempts, 13 retrievals, and 14
+  usage-accounted model calls) than Naive (5 retrievals and 5 usage-accounted
+  model calls). Stream had five cancelled controller calls, one cancelled
+  retrieval, two controller timeouts, and one controller failure without complete
+  provider usage, so its $0.08950950 observed cost is a lower bound; no paired cost
+  conclusion is valid. Naive's fully accounted observed cost was $0.05533131.
+
+This is development-only, non-final evidence. The sealed test split was not run.
+The current-source user-interface acceptance checks are complete:
+
+| Check | Status |
+|---|---|
+| Headed Playwright with Google Chrome | Passed |
+| Independent Chrome inspection | Passed |
+| Native Computer Use inspection | Passed |
+
+The headed Playwright pass exercised all three surfaces with real provider calls.
+The Naive standalone page issued no snapshot request and returned a complete,
+cited Dune answer after Send (2,680 ms TTFT; 3,109 ms total). The Stream
+standalone page prepared exact evidence before Send without showing an answer and
+returned the same cited answer with `precommit_exact` reuse (2,144 ms TTFT;
+2,682 ms total). A rapid edit to a different draft and reversion within the
+debounce window emitted no stale or redundant snapshot. Both standalone consoles
+had zero warnings and errors.
+
+On the comparison page, the final pre-Send Dune draft produced exactly one Stream
+snapshot and no Naive snapshot or visible answer. Both commit requests carried
+the exact same text and timestamp (`2026-07-18T20:40:03.728Z`) to the two
+independent services. Stream reached first token in 1,519 ms versus 2,156 ms for
+Naive and completed in 1,976 ms versus 2,555 ms. Both returned the same correct,
+cited answer with saved persistence, and the console had zero warnings and
+errors.
+
+A second, context-dependent turn asked who wrote the source novel. Each path
+retained its own prior session ID, both used the local retrieval tool once, and
+both correctly answered Frank Herbert with the same valid citation. This harder
+live diagnostic also exposed a real tail case: Stream took 6,012 ms TTFT versus
+5,114 ms for Naive, so the UI does not imply a per-query speed guarantee. A mode
+change then rotated both path sessions; the next pre-Send Stream snapshot used a
+new session and still displayed no answer. The retained capture is
+[`output/playwright/final-verified-compare.png`](../output/playwright/final-verified-compare.png).
+
+A separate native Chrome session repeated the comparison interaction. Before
+Send, the page reported `Exact draft evidence ready` while both panels still said
+`No answer yet`. After Send, both panels completed with the same Denis Villeneuve
+answer and three source links. In that diagnostic run, Stream TTFT was 1,783 ms
+versus 3,021 ms for Naive and total time was 2,220 ms versus 3,494 ms. Native
+Computer Use independently inspected the rendered Chrome window and confirmed
+the two complete panels, citations, ready-before-Send indicator, saved
+persistence, and displayed latency deltas.
+
+These browser timings prove interaction and lifecycle behavior only. The external
+five-question development benchmark above remains the primary measured
+performance evidence, but it is permanently non-reportable and subject to its
+candidate-data and zero-human-adjudication limitations.

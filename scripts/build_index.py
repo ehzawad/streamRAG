@@ -5,17 +5,17 @@ import argparse
 import asyncio
 import json
 
-from app.config import settings
-from app.data.crag import (
+from shared.config import settings
+from shared.data.crag import (
     chunk_documents,
     deduplicate_documents,
     load_snapshot_documents,
     require_dataset_snapshot,
 )
-from app.data.index_state import IndexStateRepository
-from app.data.vector_store import QdrantVectorStore
-from app.fingerprints import index_source_sha256_for_documents
-from app.rag.embeddings import OpenAIEmbedder
+from shared.data.index_state import IndexStateRepository
+from shared.data.vector_store import QdrantVectorStore
+from shared.fingerprints import index_source_sha256_for_documents
+from shared.rag.embeddings import OpenAIEmbedder
 
 
 async def run() -> None:

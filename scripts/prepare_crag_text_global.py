@@ -14,7 +14,6 @@ import hashlib
 import json
 import shutil
 import statistics
-import sys
 import tempfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -23,40 +22,20 @@ from typing import Any, Literal
 
 import tiktoken
 
-try:
-    from bench.stabilization import heuristic_stabilization_class
-except ModuleNotFoundError:  # Direct execution places scripts/ on sys.path.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from bench.stabilization import heuristic_stabilization_class  # type: ignore[no-redef]
-
-try:
-    from scripts.crag_source import (
-        DOMAINS,
-        LICENSE,
-        SOURCE_SHA256,
-        SOURCE_URL,
-        SOURCE_VERSION,
-        clean_page,
-        jaccard,
-        normalize_text,
-        read_records,
-        sha256_file,
-        visible_text,
-    )
-except ModuleNotFoundError:  # Direct execution places scripts/ on sys.path.
-    from crag_source import (  # type: ignore[no-redef]
-        DOMAINS,
-        LICENSE,
-        SOURCE_SHA256,
-        SOURCE_URL,
-        SOURCE_VERSION,
-        clean_page,
-        jaccard,
-        normalize_text,
-        read_records,
-        sha256_file,
-        visible_text,
-    )
+from scripts.crag_source import (
+    DOMAINS,
+    LICENSE,
+    SOURCE_SHA256,
+    SOURCE_URL,
+    SOURCE_VERSION,
+    clean_page,
+    jaccard,
+    normalize_text,
+    read_records,
+    sha256_file,
+    visible_text,
+)
+from scripts.stabilization import heuristic_stabilization_class
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "data" / "crag_eval"
@@ -974,7 +953,7 @@ therefore have low confidence; measured prefix retrieval traces are authoritativ
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Prepare a long-query candidate over a global official-CRAG corpus"
+        description="Reproduce the fixed canonical text-first CRAG evaluation dataset"
     )
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
