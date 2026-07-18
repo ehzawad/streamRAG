@@ -43,8 +43,12 @@ CONFIG_FINGERPRINT_FIELDS = (
     "trigger_min_new_tokens",
     "trigger_interval_ms",
     "trigger_max_presubmit_calls",
+    "parallel_raw_retrieval",
     "trigger_timeout_s",
     "retrieval_timeout_s",
+    "answer_timeout_s",
+    "summary_timeout_s",
+    "post_answer_persistence_timeout_s",
 )
 
 

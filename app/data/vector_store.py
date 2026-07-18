@@ -81,6 +81,8 @@ class QdrantVectorStore:
             tuple[str, int, str, int], tuple[float, _CachedSearchPayload]
         ] = OrderedDict()
         self._cache_lock = asyncio.Lock()
+        self._version_lock = asyncio.Lock()
+        self._index_version: int | None = None
 
     async def _client_call(self, method: str, /, **kwargs: Any) -> Any:
         call = partial(getattr(self.client, method), **kwargs)
@@ -100,6 +102,7 @@ class QdrantVectorStore:
 
     async def setup(self) -> None:
         await self.state.setup()
+        self._index_version = await self.state.version(self.settings.qdrant_collection)
         if not await self._client_call(
             "collection_exists",
             collection_name=self.settings.qdrant_collection,
@@ -219,6 +222,8 @@ class QdrantVectorStore:
             desired_chunks=len(desired),
             content_changed=content_changed,
         )
+        async with self._version_lock:
+            self._index_version = current_version
         if content_changed:
             async with self._cache_lock:
                 self._search_cache.clear()
@@ -264,6 +269,16 @@ class QdrantVectorStore:
                 self._query_cache.popitem(last=False)
         return vector, tokens
 
+    async def _current_index_version(self) -> int:
+        if self._index_version is not None:
+            return self._index_version
+        async with self._version_lock:
+            if self._index_version is None:
+                self._index_version = await self.state.version(
+                    self.settings.qdrant_collection
+                )
+            return self._index_version
+
     async def search(
         self,
         query: str,
@@ -277,7 +292,7 @@ class QdrantVectorStore:
             raise ValueError("retrieval query is empty")
         cache_scope = self._normalize_cache_scope(cache_scope)
         limit = k or self.settings.top_k
-        version = await self.state.version(self.settings.qdrant_collection)
+        version = await self._current_index_version()
         cache_key = (cache_scope, version, self._normalize_query(query), limit)
         now = time.monotonic()
         async with self._cache_lock:

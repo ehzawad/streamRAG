@@ -3,8 +3,7 @@
 **Status:** implementation complete; canonical dataset awaits human approval
 **Date:** 2026-07-18
 
-This is the current architecture record. It replaces earlier brainstorming,
-superseded dataset shapes, and experimental role configurations.
+This is the current architecture record for the submitted implementation.
 
 ## 1. Scope and source hierarchy
 
@@ -31,20 +30,20 @@ minimum.
 |---|---|
 | D01 | Path A waits for the complete committed query, then plans, retrieves, and answers. |
 | D02 | Path B receives real cumulative typed snapshots before Send; it is not submit-then-replay. |
-| D03 | A zero-shot model-assisted trigger transfers the paper's model-triggered idea; it is not represented as the paper's post-trained policy. |
-| D04 | The trigger runs on bounded snapshots, never every keystroke, and only a new accepted query starts retrieval. |
+| D03 | Path B is a latency-first hybrid: deterministic meaningful-prefix prefetch can launch one raw retrieval concurrently with a zero-shot model validator; it is not represented as the paper's post-trained policy. |
+| D04 | Eligibility runs on bounded snapshots, never every keystroke. The model validates, refines, or rejects the raw candidate, but neither heuristic eligibility nor a pre-Send decision can authorize answer evidence. |
 | D05 | Keep at most one active speculative retrieval; corrections cancel/invalidate stale work and append-only updates coalesce. |
-| D06 | Quarantine speculative evidence until a complete-input commit gate reuses, explicitly revalidates, overlaps, or replaces it. |
+| D06 | Quarantine every speculative result until the complete-input commit gate reuses and explicitly revalidates, completes compatible in-flight work, or replaces it; never generate a final answer before Send. |
 | D07 | Use one canonical dataset at `data/crag_eval`: 5 dev, 10 unseen test, 250 complete documents, exactly 1,000 points. |
 | D08 | Keep the dataset `candidate_pending_human_review`; final services fail closed until explicit `approved_frozen`. |
 | D09 | Use `text-embedding-3-large` at 3,072 dimensions, cosine Qdrant search, 400/50-token chunking, 8 candidates, top 5 context chunks. |
 | D10 | Use `gpt-5.6-sol` at medium reasoning for grounded answers; use low for the latency-sensitive trigger and summary roles. |
-| D11 | Use the OpenAI default service tier, explicit async clients, `store=false`, bounded retries, and role-specific timeouts. |
+| D11 | Use the OpenAI default service tier, explicit async clients, `store=false`, no hidden Responses retries, and role-specific timeouts/fallbacks. |
 | D12 | Use PydanticAI for typed structured output and the strict local-corpus function; use visible `asyncio` orchestration for scheduling. |
 | D13 | Give both paths the same answer agent, prompt, memory/context policy, retriever, and scorer. |
 | D14 | Isolate formal path services, local stores, sessions, and cache namespaces so neither path warms the other. |
 | D15 | Persist conversation text in SQLite; never persist retrieved bodies or speculative tool output as long-term memory. |
-| D16 | Keep the one-page React/Vite client non-blocking with a bounded latest-snapshot queue and always-available Cancel/New turn controls. |
+| D16 | Keep the one-page React/Vite client non-blocking with a bounded latest-snapshot queue, `answer.ready` as its terminal success boundary, and always-available Cancel/New turn controls. |
 | D17 | Move synchronous embedded-Qdrant work to one dedicated worker so it cannot block the event loop. |
 | D18 | Report paired TTFT/total deltas, correctness, citations, calls, cost coverage, failures, and stabilization strata; do not cherry-pick. |
 | D19 | Run the final 10×2 comparison once with no dataset warm-up and a 45 s per-case deadline after approval. |
@@ -57,21 +56,26 @@ not merely a string delivered after clicking Send. The browser samples cumulativ
 dirty text every 400 ms. Snapshots include partial words and are sent only at ticks
 strictly before Send; commit carries the complete text as a higher revision.
 
-The server does not call a model on every character. A snapshot becomes eligible
-after five words and either three new words or a terminal punctuation boundary,
-with at least 500 ms between decisions. A four-call base budget grows modestly for
-long questions (at most three additional ordinary calls plus a reserved terminal
-boundary). An in-flight decision absorbs append-only snapshots and processes only
-the latest pending state next.
+The server does not call a model or retrieve on every character. A snapshot becomes
+eligible after five words and either three new words or a terminal punctuation
+boundary, with at least 500 ms between decisions. A four-call base budget grows
+modestly for long questions (at most three additional ordinary calls plus a
+reserved terminal boundary). At a new eligible boundary with no reusable work, one
+raw meaningful-prefix retrieval may start concurrently with the model decision. An
+in-flight decision absorbs append-only snapshots and processes only the latest
+pending state next.
 
-The structured trigger chooses exactly one action:
+The structured model validator chooses exactly one action:
 
 - `wait` when entity, relation, or constraints are incomplete;
 - `retrieve` with a short standalone factual query when intent is stable enough;
 - `keep_previous` when existing completed work still covers the draft.
 
-This is the paper's model-based trigger shape adapted without post-training. It
-does not issue a retrieval for every trigger call.
+This retains the paper's model-based trigger shape without post-training, while
+adding a latency-first deterministic prefetch that the model cannot directly
+authorize for answering. Some eligible boundaries can therefore spend one raw
+retrieval even if the model later chooses `wait`; that work is quarantined and
+discarded unless later validation and the complete-input commit gate accept it.
 
 ## 4. Commit safety and correction handling
 
@@ -84,7 +88,9 @@ awaiting any work. The complete-input controller produces the canonical retrieva
 query. Speculative evidence can be promoted only when its revision/text/query is
 compatible or the complete-input controller explicitly revalidates it. Otherwise
 Path B performs the same complete-query retrieval required by Path A. The answer
-agent never sees unaccepted evidence.
+agent never sees unaccepted evidence, and answer generation never begins before
+Send. Raw retrieval completion is therefore provisional work, not a user-visible
+answer or automatically safe grounding.
 
 Metrics distinguish:
 
@@ -122,18 +128,34 @@ the Stream scheduler. The latter remains ordinary auditable async code.
 | Conversation summary | `gpt-5.6-sol`, low reasoning | infrequent compression task |
 | Embedding | `text-embedding-3-large`, 3,072 dimensions | highest-quality locked dense representation |
 
-The OpenAI service tier is `default`. Model retries are capped at one. Timeouts
-are 4 s for a trigger decision, 6 s for retrieval/local tool work, 30 s for the
-answer, 8 s for summary, and 45 s for embedding batches. Failures remain visible
-and unpriced calls make cost a lower bound rather than an invented zero.
+The OpenAI service tier is `default`. Responses roles use zero SDK retries so an
+inner transport retry cannot outlive the application's measured deadline; the
+embedding client retains at most one retry. Timeouts are 4 s for a trigger
+decision, 6 s for retrieval/local tool work, 30 s for the answer, 8 s for summary,
+10 s for post-answer persistence, and 45 s for embedding batches. Answer delivery
+uses `answer.ready` as the user-visible terminal event immediately after grounded
+generation and before bounded persistence/summary maintenance. The later
+`answer.completed` event supplies final persistence status and accounting, so
+maintenance failure is observable without rewriting or holding open a successful
+answer. Failures remain visible and unpriced calls make cost a lower bound rather
+than an invented zero.
+
+Configuration is intentionally frozen once per process. `app.config` loads `.env`,
+constructs the immutable singleton, and validates these benchmark locks during
+import; environment changes require a restart. Components still accept explicit
+`Settings` instances for tests, and the isolated benchmark services receive their
+environment before their fresh process imports the application. This is deliberate
+fail-fast reproducibility behavior, not support for hot-reloaded configuration.
 
 ## 7. Memory and context
 
 SQLite stores an opaque session key, rolling conversation summary, and recent
-user/assistant messages. A session lease prevents concurrent mutation. The last
-four turns stay raw; older text is summarized after the history budget is crossed.
-Compression occurs after the current answer so it does not delay that answer's
-TTFT.
+user/assistant messages. Follow-up context reads and post-answer writes share the
+same session lease, so a new turn cannot observe half-persisted history. If optional
+compaction fails, the completed turn is durably saved in its uncompressed form
+before the failure is reported. The last four turns stay raw; older text is
+summarized after the history budget is crossed. Compression occurs after the
+current answer so it does not delay that answer's TTFT.
 
 Retrieved documents, speculative queries/evidence, and tool bodies remain turn-
 local. Idle turns are reaped after 120 s, sessions after 24 h, and terminal event
@@ -150,12 +172,19 @@ hashing/chunk loading and metrics-log writes are also offloaded.
 The frontend permits one snapshot request in flight and one replaceable pending
 latest snapshot. Send aborts obsolete snapshot transport; answer SSE collection
 does not disable Cancel or New turn. Index sync takes a maintenance lock and live
-work receives a clear 503 instead of racing index mutation.
+work receives a clear 503 instead of racing index mutation. Loading ends when each
+requested path receives `answer.ready` (or `answer.error`); `answer.completed` is
+accounting and maintenance telemetry rather than a second user-visible completion.
 
 The real local worker probe used 256 ANN/payload reads at client concurrency 32
 over 1,000 3,072-dimensional points: zero errors, p95 request latency 93.449 ms,
 p95 event-loop lag 1.158 ms, and max event-loop lag 1.298 ms. This supports the
 local non-blocking claim, not unlimited production concurrency.
+
+Direct development and Docker Compose publish only on `127.0.0.1`. The API has no
+authentication, authorization, rate limit, or tenant isolation, and CORS is not a
+security boundary. It must not be exposed to another interface without the controls
+listed in [`SECURITY.md`](SECURITY.md).
 
 ## 9. Dataset and freeze boundary
 
@@ -169,10 +198,10 @@ source checksum and evidence phrases. It never reads path outputs, latency, cost
 or retrieval rank. The review sheet covers wording, aliases, timestamps, evidence,
 split role, and low-confidence stabilization label for every question.
 
-The known defective development candidates from earlier drafts were corrected or
-replaced before this dataset was generated. That repair does not constitute human
-approval. Until a reviewer explicitly freezes the status and checksums, the unseen
-test split remains unavailable to the final launcher.
+Question and evidence defects found during development were corrected or replaced
+before this dataset was generated. That repair does not constitute human approval.
+Until a reviewer explicitly freezes the status and checksums, the unseen test split
+remains unavailable to the final launcher.
 
 ## 10. Evaluation contract and evidence
 
@@ -190,15 +219,32 @@ Primary output includes:
 - completion/failure/timeout/throughput and cache/reuse/overlap/fallback state;
 - early-, late-, and revision/ambiguity strata.
 
-Real development evidence on all five dev questions found 100% expected-answer and
-supporting-citation correctness for both paths. Stream won TTFT on 60% overall with
-a median paired -335.918 ms (-4.9328%) delta. On the three early-stabilizing
-questions it won all three with median paired -2,054.847 ms (-36.877%) and no
-accuracy loss; it lost on the one late and one revision/ambiguity item. Stream used
-22 model calls versus 9 and cost at least $0.10177092 versus $0.06683183 across
-the five outputs.
+The retained run used all five checksum-bound dev questions and no unseen test
+question. Both paths completed 5/5 with 100% automatic expected-answer, evidence-
+support, supporting-citation, and false-premise correctness. Stream won TTFT on
+4/5 pairs; median paired Stream-minus-Naive TTFT was -628.907 ms (-12.0846%),
+paired p95 TTFT delta was +275.880 ms because one tail pair was slower, and median
+total-time delta was -702.294 ms. The early slice won 3/3 at -3,104.281 ms median
+TTFT, the one late item lost at +464.497 ms, and the revision/ambiguity item won at
+-478.590 ms. All accuracy deltas were zero: scheduling produced no accuracy gain
+on these already-correct outputs.
 
-Those are non-final development results. No test prediction has been generated.
+Naive medians were 5,906.720 ms TTFT and 6,290.444 ms total; Stream medians were
+4,575.290 ms and 5,083.832 ms. Stream used 20 model API calls, 23 controller
+calls, and 12 retrievals versus Naive's 7, 5, and 5. Neither path issued a dynamic
+function-tool call. Observed costs were at least $0.11416807 and $0.06137975,
+respectively. They are lower bounds: complete accounting covered 0/5 Stream and
+2/5 Naive outputs, leaving zero complete cost pairs, so no paired cost delta is
+available. All accepted retrieval lead-at-commit values were zero; 20% reused
+provisional work after commit revalidation, 40% completed compatible work after
+commit, and 40% fell back at commit. The one ultimately reused raw candidate had
+2,226.851 ms of provisional headroom. These facts prevent attributing every
+observed latency delta to safe pre-Send evidence.
+
+The manifest is `reportable: false` and `completed_non_reportable`. It records 10
+completed outputs, zero failures/deadline failures, two distinct services, and
+complete transport/timing/cleanup integrity gates. These are non-final development
+results; no test prediction has been generated.
 
 ## 11. Paper interpretation
 
@@ -221,16 +267,24 @@ The project does not claim the paper's speech latency, accuracy, training, Audio
 ## 12. Reproduction and honest claims
 
 Normal reproduction uses the committed compressed dataset; the 705 MiB upstream
-download is optional. A clean real index took 40.94 s and the real five-question
-development A/B run took 182.4 s. After approval, the bounded 20-case final runner
-is designed to keep the full normal workflow around 15–20 minutes on a normal
-connection and responsive provider.
+download is optional. A clean real index took 40.94 s and the retained real
+five-question development A/B run took 180.866 s. After approval, the bounded
+20-case final runner is designed to keep the full normal workflow around 15–20
+minutes on a normal connection and responsive provider.
+
+Before approval, `benchmark-dev-services-{check,sync,serve}` is the only supported
+two-service provisioning route. It accepts exactly the candidate status, creates
+isolated child state with the unreviewed flag, and leads only to
+`benchmark-smoke`/`score-dev`. The final service targets never pass that flag, and
+the final runner independently requires approved service/query-bundle identities.
 
 We may claim now:
 
 - genuine pre-Send typed snapshots and speculative local retrieval;
-- safe commit validation/fallback and isolated A/B implementations;
-- real development correctness parity and query-dependent latency gains;
+- raw evidence remains provisional, with safe commit validation/fallback and no
+  final answer before Send;
+- real development correctness parity and observed query-dependent latency
+  differences, with the retained lower-bound costs/calls disclosed;
 - a responsive event loop under the measured local Qdrant probe.
 
 We may not claim now:

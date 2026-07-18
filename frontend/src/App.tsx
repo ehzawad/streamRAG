@@ -10,6 +10,11 @@ import {
   type Source,
   subscribe,
 } from "./api";
+import {
+  isUserVisibleRunComplete,
+  recordUserVisibleTerminal,
+  type AnswerPath,
+} from "./runLifecycle";
 
 type Panel = {
   answer: string;
@@ -73,7 +78,7 @@ export default function App() {
   const turnId = useRef(crypto.randomUUID());
   const turnOpened = useRef(false);
   const revision = useRef(0);
-  const completedCount = useRef(0);
+  const userVisibleTerminalPaths = useRef<Set<AnswerPath>>(new Set());
   const timer = useRef<number | undefined>(undefined);
   const pendingQuery = useRef("");
   const lastSnapshotText = useRef("");
@@ -127,12 +132,22 @@ export default function App() {
     } else if (event.type === "retrieval.started") {
       setPanels((current) => ({
         ...current,
-        stream: { ...current.stream, status: "Retrieving before submit…" },
+        stream: {
+          ...current.stream,
+          status: event.candidate
+            ? "Retrieving a completed-prefix candidate…"
+            : "Retrieving before submit…",
+        },
       }));
     } else if (event.type === "retrieval.ready") {
       setPanels((current) => ({
         ...current,
-        stream: { ...current.stream, status: "Evidence ready before submit." },
+        stream: {
+          ...current.stream,
+          status: event.candidate
+            ? "Candidate evidence ready; validating intent…"
+            : "Evidence ready before submit.",
+        },
       }));
     } else if (event.type === "retrieval.discarded") {
       setPanels((current) => ({
@@ -142,7 +157,10 @@ export default function App() {
     } else if (event.type === "retrieval.revalidated") {
       setPanels((current) => ({
         ...current,
-        stream: { ...current.stream, status: "Earlier evidence revalidated for this text." },
+        stream: {
+          ...current.stream,
+          status: "Evidence validated and ready — press Send for the grounded answer.",
+        },
       }));
     } else if (event.type === "retrieval.reused") {
       setPanels((current) => ({
@@ -196,6 +214,7 @@ export default function App() {
       return;
     }
     const path = event.path;
+    const wasUserVisibleTerminal = userVisibleTerminalPaths.current.has(path);
     setPanels((current) => {
       const panel = current[path];
       if (event.type === "answer.started") {
@@ -203,6 +222,32 @@ export default function App() {
       }
       if (event.type === "answer.delta") {
         return { ...current, [path]: { ...panel, answer: panel.answer + (event.text || "") } };
+      }
+      if (event.type === "answer.ready") {
+        return {
+          ...current,
+          [path]: {
+            ...panel,
+            answer: event.answer || panel.answer,
+            sources: event.sources || panel.sources,
+            status: "Complete",
+            firstToken: event.timing?.submit_to_first_token_ms ?? null,
+            total: event.timing?.total_response_ms ?? null,
+            cost: event.estimated_cost_usd?.total ?? null,
+            accountingComplete:
+              event.estimated_cost_usd?.accounting_complete ?? null,
+            retrievalLead:
+              event.timing?.accepted_retrieval_lead_at_commit_ms ?? null,
+            candidateRetrievalLead:
+              event.timing?.accepted_candidate_retrieval_lead_ms ?? null,
+            reuseMode: event.reuse?.mode ?? null,
+            cacheHit: event.retrieval?.cache_hit ?? null,
+            controllerCalls: event.controller?.calls ?? null,
+            retrievalCalls: event.retrieval?.calls ?? null,
+            toolCalls: event.tool_traces?.length ?? null,
+            fallbacks: event.reuse?.commit_fallbacks ?? null,
+          },
+        };
       }
       if (event.type === "answer.completed") {
         return {
@@ -231,6 +276,7 @@ export default function App() {
         };
       }
       if (event.type === "answer.error") {
+        if (wasUserVisibleTerminal) return current;
         return {
           ...current,
           [path]: { ...panel, status: event.message || "Path failed" },
@@ -238,10 +284,8 @@ export default function App() {
       }
       return current;
     });
-    if (event.type === "answer.completed" || event.type === "answer.error") {
-      const expected = mode === "compare" ? 2 : 1;
-      completedCount.current += 1;
-      if (completedCount.current >= expected) {
+    if (recordUserVisibleTerminal(userVisibleTerminalPaths.current, event)) {
+      if (isUserVisibleRunComplete(mode, userVisibleTerminalPaths.current)) {
         setRunning(false);
         turnEvents.current?.close();
         runEvents.current?.close();
@@ -359,7 +403,7 @@ export default function App() {
   async function submit() {
     if (!query.trim() || running) return;
     setRunning(true);
-    completedCount.current = 0;
+    userVisibleTerminalPaths.current.clear();
     setTrace([]);
     setPanels({
       naive: emptyPanel(mode === "stream" ? "Not selected" : "Working…"),

@@ -3,13 +3,13 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from pydantic_ai import Agent, UsageLimits
+from pydantic_ai import Agent, ToolOutput, UsageLimits
 from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 
 from app.agent.openai_client import responses_model
 from app.agent.summary_skill import pydantic_usage
 from app.config import Settings
-from app.models import TriggerDecision, Usage
+from app.models import RETRIEVAL_QUERY_MAX_CHARS, TriggerDecision, Usage
 
 
 @dataclass(frozen=True)
@@ -25,18 +25,44 @@ Input is a cumulative draft while the user is typing.
 Choose exactly one action:
 - wait: intent/entities are still too incomplete or ambiguous for a precise search.
 - retrieve: enough stable intent exists; emit a short standalone factual retrieval query.
-- keep_previous: the previous successful query still covers this draft.
+- keep_previous: the reusable candidate query still covers this draft.
+
+Also set candidate_query_compatible=true whenever the reusable candidate can
+retrieve answer-bearing evidence for the current draft, even if you can phrase a
+cleaner standalone query. Set it false when there is no candidate or when a new
+entity, relation, date, location, number, negation, or comparison makes it unsafe.
 
 Precision rules:
-- Prefer wait over an ambiguous or premature query.
+- Optimize recall before commit: some discarded retrieval is acceptable. Wait only
+  while the entity/object or requested property/relation is too ambiguous to target
+  answer-bearing evidence.
 - Never invent missing entities, dates, constraints, or user intent.
 - Retrieve once the object/entity and requested property or relation are clear.
+- A reusable candidate may be a raw completed prefix whose retrieval is already in
+  flight. Prefer keep_previous when it targets the same answer-bearing evidence;
+  rewrite it only when the added text materially changes or disambiguates retrieval.
 - For comparisons, wait until every compared target needed for retrieval is present.
 - Treat output-format or explanation instructions as non-retrieval-changing when
   the existing query already targets the same answer-bearing evidence.
 - If the draft materially corrects the entity or intent, retrieve a corrected query.
 - At commit, do not wait for a complete factual question; retrieve if corpus evidence could help.
 """
+
+
+def bounded_retrieval_query(draft: str) -> str:
+    """Keep deterministic fallback queries inside the structured-output contract."""
+    query = draft.strip()
+    if len(query) <= RETRIEVAL_QUERY_MAX_CHARS:
+        return query
+    separator = "\n...\n"
+    remaining = RETRIEVAL_QUERY_MAX_CHARS - len(separator)
+    prefix_chars = remaining // 2
+    suffix_chars = remaining - prefix_chars
+    return (
+        f"{query[:prefix_chars].rstrip()}"
+        f"{separator}"
+        f"{query[-suffix_chars:].lstrip()}"
+    )
 
 
 class ModelTrigger:
@@ -57,7 +83,7 @@ class ModelTrigger:
         self.agent = Agent(
             model,
             name="streamrag_trigger",
-            output_type=TriggerDecision,
+            output_type=ToolOutput(TriggerDecision, strict=True),
             instructions=TRIGGER_POLICY,
             model_settings=model_settings,
         )
@@ -76,7 +102,7 @@ class ModelTrigger:
         started = time.perf_counter()
         result = await self.agent.run(
             "Cumulative draft:\n"
-            f"{draft}\n\nPrevious successful query: {previous_query or '(none)'}\n"
+            f"{draft}\n\nReusable candidate query: {previous_query or '(none)'}\n"
             f"Recent conversation (may resolve follow-up references):\n"
             f"{conversation_context or '(none)'}\n"
             f"Input committed: {is_commit}",
@@ -85,7 +111,10 @@ class ModelTrigger:
         decision = result.output
         # A commit cannot be stranded by a wait decision when no usable evidence exists.
         if is_commit and decision.action == "wait":
-            decision = TriggerDecision(action="retrieve", retrieval_query=draft)
+            decision = TriggerDecision(
+                action="retrieve",
+                retrieval_query=bounded_retrieval_query(draft),
+            )
         return TriggerResult(
             decision=decision,
             usage=pydantic_usage(result.usage, "trigger"),

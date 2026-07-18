@@ -3,36 +3,34 @@
 **Date:** 2026-07-18
 **Scope:** development data only; the unseen test split was not run.
 
-## Final Playwright acceptance
+The canonical dataset remains `candidate_pending_human_review`. All retained
+answer runs use its five checksum-bound development questions only; the unseen
+test queries remain sealed and no final benchmark is claimed.
+
+## Browser surface acceptance
 
 The repaired 1,000-point application was started with the real FastAPI/Vite,
 OpenAI, embedding, and Qdrant stack. No frontend, SSE, retrieval, controller, or
 answer call was mocked. Headed Playwright typed the development-only Bad Bunny
-question at 45 ms/character in Compare mode and allowed prefetch before Send; no
-frozen-test query was used.
+question in Compare mode, paused for five seconds so prefetch could finish, and
+then pressed Send; no frozen-test query was used.
 
 Both paths returned **Un Verano Sin Ti** and cited the same audited local source
-chunk, `crag-global-a6deebaec508edb9daefce6e::c0000`. The final UI exposed the
+chunk, `crag-global-a6deebaec508edb9daefce6e::c0004`. The final UI exposed the
 locked model/role configuration and 1,000 chunks, plus TTFT, total time, partial
 cost, accepted/retrieval-ready lead, evidence mode, cache, citations, controller /
 retrieval / tool calls, and fallback count.
 
-Visible diagnostic values were:
-
-| Path | TTFT | Total | Cost | Evidence | Accepted lead | Calls (controller/retrieval/tool) |
-|---|---:|---:|---:|---|---:|---:|
-| Naive | 6,335 ms | 6,647 ms | $0.0113 | At Send | 0 ms | 1 / 1 / 0 |
-| Stream | 2,062 ms | 2,460 ms | $0.0167 | Revalidated | 15,952 ms | 3 / 1 / 0 |
-
-This single concurrent Compare view is a live diagnostic, not an accuracy score or
-reportable benchmark. It demonstrates the intended early-stabilization experience:
-the Stream path preserved the same answer/citation and exposed a 4,273 ms lower
-TTFT at $0.0054 higher displayed cost. Formal claims come from the isolated runner.
+The browser displayed raw prefetch activity before Send, but no final answer was
+generated or shown before Send. Raw retrieved candidates were provisional; the
+commit path still had to validate, finish compatible work, or retrieve again before
+grounded generation. Concurrent Compare timings are intentionally not treated as
+benchmark evidence.
 
 Final viewport evidence:
 [`final-verified-compare.png`](../output/playwright/final-verified-compare.png).
-Earlier screenshots from superseded corpora/configurations are intentionally not
-accepted.
+The screenshot is UI evidence, not the authoritative timing/cost record; formal
+claims use the content-addressed isolated run below.
 
 ## Independent browser-surface checks
 
@@ -40,31 +38,71 @@ After the Playwright journey, the same local stack was inspected through the
 requested additional surfaces:
 
 - **In-app Browser:** loaded health showing `gpt-5.6-sol`, medium answer / low
-  trigger roles, and 1,000 points; observed typed prefetch/evidence ready before
-  Send and completion of both Compare paths. This is flow/surface evidence only.
-- **macOS Computer Use:** switched to and visually inspected the local application
-  in Google Chrome. This confirms the native UI surface, not answer correctness or
-  benchmark timing.
+  trigger roles, and 1,000 points; observed raw typed prefetch before Send, then
+  post-commit grounded completion of both Compare paths. This is flow/surface
+  evidence only.
+- **macOS Computer Use:** an earlier implementation was visually inspected in
+  Google Chrome, but the post-`answer.ready` re-check could not run because macOS
+  was locked and automatic unlock failed. This surface is therefore not claimed
+  as current-code acceptance; headed Playwright, Chrome control, and the in-app
+  browser are the current-code checks.
 - **Chrome control (final browser action):** ran a full Compare on the same Bad
   Bunny development question. Both paths again returned and cited **Un Verano Sin
-  Ti**. Naive showed 4,086 ms TTFT, 4,375 ms total, and $0.0108; Stream showed
-  1,604 ms TTFT, 3,922 ms total, and $0.0109, with evidence ready before Send. The
-  visible TTFT delta was -2,481 ms.
+  Ti**, with raw prefetch visible before Send and the answer appearing only after
+  commit.
 
-These live values vary with provider/network timing and concurrent Compare
-execution. They are illustrative acceptance evidence only; they are not merged
+The browser journeys are illustrative surface acceptance only. They are not merged
 with the isolated development benchmark and do not weaken the dataset approval
 gate.
+
+## Clean-clone reproduction
+
+A fresh local clone of the release tree reproduced the complete development
+workflow with the real environment and no copied runtime state:
+
+- dependency setup: 1.66 s;
+- checksum/data verification: 1.39 s;
+- 110 backend tests, frontend tests, and production build: 9.92 s;
+- isolated-service preflight: 0.07 s;
+- two new 1,000-point `text-embedding-3-large` indexes: 81.47 s total;
+- service readiness observation: about 5 s;
+- 10 real answer runs plus scoring: 186.14 s.
+
+That is about 4 minutes 46 seconds end to end, comfortably inside the requested
+15–20 minute ceiling. Both clean-clone paths again scored 100% answer and citation
+correctness with zero failures and no pre-Send answer events. Its live latency
+sample was 3/5 Stream TTFT wins and a -261.677 ms paired median, rather than the
+retained run's 4/5 and -628.907 ms. The clean-clone result is recorded here as a
+reproduction check, not substituted for the already-retained first post-fix run;
+the difference is direct evidence that five live pairs are too small for a stable
+latency estimate.
 
 ## Real API/index evidence already complete
 
 - A clean real OpenAI embedding build indexed 1,000/1,000 chunks in 40.94 s using
   366,142 `text-embedding-3-large` tokens. No embedding or retrieval call was
   mocked.
-- The five-question development comparison used two live, isolated backend
-  processes and real model calls. Both paths achieved 100% expected-answer and
-  supporting-citation correctness; the unseen split remained untouched.
-- The final development result and its limitations are recorded in
+- The retained comparison used the five checksum-bound dev questions, two live
+  isolated backend processes, and real model calls. Both paths completed 5/5 at
+  100% automatic expected-answer, evidence-support, supporting-citation, and
+  false-premise correctness. Stream won TTFT on 4/5 pairs with median paired
+  TTFT/total deltas of -628.907/-702.294 ms; the paired p95 TTFT delta was
+  +275.880 ms because one tail pair was slower. Naive median TTFT/total was
+  5,906.720/6,290.444 ms and Stream's was 4,575.290/5,083.832 ms. This is
+  correctness parity, not an accuracy gain, and the five live pairs are too small
+  to promise the same ordering on every rerun.
+- Stream used 20 model calls, 23 controller calls, and 12 retrievals versus
+  Naive's 7, 5, and 5. Both paths made zero dynamic function-tool calls. Observed
+  costs were lower bounds: at least $0.11416807 Stream and $0.06137975 Naive;
+  complete accounting covered 0/5 and 2/5 outputs, respectively, so there is no
+  paired cost delta. The run took 180.866 s. The artifact is `reportable: false`;
+  no unseen query was run.
+- All accepted evidence lead-at-commit measurements were zero. Raw candidates
+  could exist earlier, but remained provisional until commit validation; Stream's
+  fallback, compatible post-commit overlap, and speculative-reuse rates were 40%,
+  40%, and 20%. The one ultimately reused candidate had 2,226.851 ms of raw
+  headroom. Final answer generation never began before Send.
+- The retained development result and its limitations are recorded in
   [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
 
 ## Event-loop and embedded-Qdrant probe
@@ -92,14 +130,23 @@ claim.
 
 ## Non-blocking user path
 
-- OpenAI/PydanticAI calls use explicit async clients, bounded retries, and role-
-  specific timeouts: 4 s trigger, 6 s retrieval, 30 s answer, 8 s summary.
+- OpenAI/PydanticAI calls use explicit async clients. Responses roles use no SDK
+  retry beneath their measured deadline; embeddings retain one bounded retry.
+  Role-specific timeouts are 4 s trigger, 6 s retrieval, 30 s answer, 8 s summary,
+  and 10 s post-answer persistence.
 - The browser keeps one snapshot request active and one replaceable latest pending
   snapshot; Send aborts obsolete snapshot work instead of waiting behind it.
 - SSE response collection is independent of input controls, and Cancel/New turn
   remain available during work.
-- Per-session leases, idle-turn cleanup, terminal-event retention, and a maintenance
-  lock prevent unbounded task/session growth and index mutation during live work.
+- `answer.ready` carries the grounded answer and ends visible loading for each
+  requested path before bounded post-answer persistence. The later
+  `answer.completed` event is accounting/maintenance telemetry and does not hold
+  the user-visible run open.
+- Follow-up context reads share the post-answer session lease, so they cannot race
+  a pending save. If optional compaction fails, the completed turn is durably saved
+  uncompressed before failure telemetry. Idle-turn cleanup, terminal-event
+  retention, and a maintenance lock prevent unbounded task/session growth and
+  index mutation during live work.
 
 These controls make the assessment UI non-blocking under its intended local load.
 Production scaling would replace embedded Qdrant and SQLite and would require a

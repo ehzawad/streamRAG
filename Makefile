@@ -3,6 +3,7 @@ STREAM_BASE_URL ?= http://localhost:8002
 DEV_NAIVE_BASE_URL ?= http://localhost:8001
 DEV_STREAM_BASE_URL ?= http://localhost:8002
 SMOKE_EVALUATION_DIR ?= data/crag_eval
+DEV_STATE_ROOT ?= bench/results/dev-services
 BENCH_EVALUATION_DIR ?= data/crag_eval
 BENCH_INFERENCE_DIR ?= bench/results/inference_bundle
 BENCH_STATE_ROOT ?= bench/results/services
@@ -18,6 +19,7 @@ DEV_SUMMARY ?= bench/results/dev-comparison/summary.json
 
 .PHONY: setup dev check build verify-data sync-data benchmark-services-check \
 	benchmark-inference-bundle benchmark-services-sync benchmark-services-serve \
+	benchmark-dev-services-check benchmark-dev-services-sync benchmark-dev-services-serve \
 	benchmark-smoke score-dev benchmark score score-final crag-source docker-up docker-down
 
 setup:
@@ -30,6 +32,7 @@ dev:
 check:
 	uv run ruff check app scripts tests bench
 	uv run pytest -q
+	cd frontend && npm test
 	cd frontend && npm run build
 
 build:
@@ -60,6 +63,18 @@ benchmark-services-sync:
 benchmark-services-serve:
 	uv run python scripts/benchmark_services.py serve \
 		--dataset-dir $(BENCH_INFERENCE_DIR) --state-root $(BENCH_STATE_ROOT)
+
+benchmark-dev-services-check:
+	uv run python scripts/benchmark_services.py check --development-candidate \
+		--dataset-dir $(SMOKE_EVALUATION_DIR) --state-root $(DEV_STATE_ROOT)
+
+benchmark-dev-services-sync:
+	uv run python scripts/benchmark_services.py sync --development-candidate \
+		--dataset-dir $(SMOKE_EVALUATION_DIR) --state-root $(DEV_STATE_ROOT)
+
+benchmark-dev-services-serve:
+	uv run python scripts/benchmark_services.py serve --development-candidate \
+		--dataset-dir $(SMOKE_EVALUATION_DIR) --state-root $(DEV_STATE_ROOT)
 
 benchmark-smoke:
 	uv run python bench/run_benchmark.py --smoke --query-limit $(DEV_QUERY_LIMIT) --wpm 70 \

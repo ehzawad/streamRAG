@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -21,7 +22,10 @@ from app.stream.coordinator import (
     StreamCoordinator,
 )
 from app.stream.snapshot import SnapshotAnalyzer
-from app.stream.trigger import ModelTrigger
+from app.stream.trigger import ModelTrigger, bounded_retrieval_query
+
+TERMINAL_TURN_LIMIT = 4096
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,6 +69,7 @@ class PathTelemetry:
     controller_failures: int = 0
     controller_elapsed_ms: float = 0.0
     retrieval_calls: int = 1
+    raw_retrieval_calls: int = 0
     retrieval_embedding_tokens: int = 0
     retrieval_query_vector_ms: float = 0.0
     retrieval_ann_ms: float = 0.0
@@ -122,6 +127,7 @@ class RagRuntime:
         self.turns: dict[str, StreamCoordinator] = {}
         self.turn_bindings: dict[str, tuple[str, str]] = {}
         self.terminal_turns: dict[str, CommitReservation | None] = {}
+        self.terminal_turn_limit = TERMINAL_TURN_LIMIT
         self.tasks: set[asyncio.Task] = set()
         self.turn_tasks: dict[str, set[asyncio.Task]] = {}
         self.maintenance_tasks: set[asyncio.Task] = set()
@@ -134,14 +140,40 @@ class RagRuntime:
     def start_maintenance(self) -> None:
         task = asyncio.create_task(self._maintenance_loop())
         self.maintenance_tasks.add(task)
-        task.add_done_callback(self.maintenance_tasks.discard)
+        task.add_done_callback(self._maintenance_done)
+
+    def _maintenance_done(self, task: asyncio.Task) -> None:
+        self.maintenance_tasks.discard(task)
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is None:
+            logger.error("runtime maintenance loop exited unexpectedly")
+            return
+        logger.error(
+            "runtime maintenance loop crashed",
+            exc_info=(type(exception), exception, exception.__traceback__),
+        )
+
+    async def _maintenance_cycle(self) -> None:
+        try:
+            await self.reap_idle_turns()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("idle-turn maintenance failed; the loop will continue")
+        try:
+            await self.agent.sessions.prune(self.settings.session_retention_hours)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("session-pruning maintenance failed; the loop will continue")
 
     async def _maintenance_loop(self) -> None:
         interval = max(1.0, min(30.0, self.settings.turn_idle_timeout_s / 2))
         while True:
             await asyncio.sleep(interval)
-            await self.reap_idle_turns()
-            await self.agent.sessions.prune(self.settings.session_retention_hours)
+            await self._maintenance_cycle()
 
     async def reap_idle_turns(self, now_ms: float | None = None) -> int:
         now_ms = now_ms or time.perf_counter() * 1000
@@ -217,7 +249,6 @@ class RagRuntime:
         controller_timeouts = 0
         controller_failures = 0
         action = "retrieve"
-        reused_previous = False
         controller_started = time.perf_counter()
         try:
             trigger_result = await asyncio.wait_for(
@@ -232,9 +263,9 @@ class RagRuntime:
             controller_usage.add(trigger_result.usage)
             decision = trigger_result.decision
             action = decision.action
-            if decision.action == "keep_previous" and previous_query:
+            if decision.candidate_query_compatible and previous_query:
                 query = previous_query
-                reused_previous = True
+                action = "keep_previous"
             elif decision.action == "retrieve" and decision.retrieval_query:
                 query = decision.retrieval_query
             else:
@@ -245,10 +276,10 @@ class RagRuntime:
         except Exception:
             controller_failures = 1
             query = snapshot.text
+        query = bounded_retrieval_query(query)
         controller_elapsed_ms = (time.perf_counter() - controller_started) * 1000
         return EndpointPlanResult(
             query=query,
-            reused_previous=reused_previous,
             decision_action=action,
             controller_usage=controller_usage,
             controller_calls=1,
@@ -342,6 +373,7 @@ class RagRuntime:
             json.dumps(
                 {
                     "path": request.path,
+                    "query_time": request.query_time,
                     "revision": request.revision,
                     "session_id": request.session_id,
                     "text": request.text,
@@ -376,19 +408,14 @@ class RagRuntime:
                         "turn_id is already bound to a different session or path"
                     )
                 self.terminal_turns[turn_id] = reservation
-                while len(self.terminal_turns) > 4096:
-                    self.terminal_turns.pop(next(iter(self.terminal_turns)))
+                self._prune_terminal_turns_locked(protected_turn_id=turn_id)
         if pending_duplicate is not None:
             await pending_duplicate.ready.wait()
             if pending_duplicate.started:
                 return pending_duplicate.run_id
             raise RuntimeError(
                 "the original commit setup failed; retry the commit request"
-                + (
-                    f": {pending_duplicate.setup_error}"
-                    if pending_duplicate.setup_error
-                    else ""
-                )
+                + (f": {pending_duplicate.setup_error}" if pending_duplicate.setup_error else "")
             )
         try:
             coordinator: StreamCoordinator | None = None
@@ -427,6 +454,7 @@ class RagRuntime:
                 self.turn_tasks.setdefault(turn_id, set()).add(task)
                 reservation.started = True
                 reservation.ready.set()
+                self._prune_terminal_turns_locked(protected_turn_id=turn_id)
         except BaseException as exc:
             orphaned_coordinator: StreamCoordinator | None = None
             async with self._turn_lock:
@@ -451,6 +479,10 @@ class RagRuntime:
                 turn_set.discard(completed)
                 if not turn_set:
                     self.turn_tasks.pop(turn_id, None)
+            if len(self.terminal_turns) > self.terminal_turn_limit:
+                prune_task = asyncio.create_task(self._prune_terminal_turns())
+                self.maintenance_tasks.add(prune_task)
+                prune_task.add_done_callback(self.maintenance_tasks.discard)
 
         task.add_done_callback(release)
         return run_id
@@ -563,9 +595,7 @@ class RagRuntime:
         request_started_ms,
         send,
     ) -> None:
-        conversation_context = await self.agent.conversation_context(
-            f"{request.session_id}:naive"
-        )
+        conversation_context = await self.agent.conversation_context(f"{request.session_id}:naive")
         endpoint = await self._endpoint_retrieve(
             InputSnapshot(
                 turn_id=turn_id,
@@ -638,9 +668,7 @@ class RagRuntime:
             request=request,
             retrieval=PathTelemetry(
                 result=evidence.result,
-                retrieval_started_ms=(
-                    metrics.accepted_retrieval_started_ms or evidence.started_ms
-                ),
+                retrieval_started_ms=(metrics.accepted_retrieval_started_ms or evidence.started_ms),
                 retrieval_ready_ms=metrics.accepted_retrieval_ready_ms or evidence.completed_ms,
                 controller_usage=metrics.trigger_usage,
                 controller_calls=metrics.trigger_calls,
@@ -648,6 +676,7 @@ class RagRuntime:
                 controller_failures=metrics.controller_failures,
                 controller_elapsed_ms=metrics.trigger_elapsed_ms,
                 retrieval_calls=metrics.retrieval_calls,
+                raw_retrieval_calls=metrics.raw_retrieval_calls,
                 retrieval_embedding_tokens=metrics.retrieval_embedding_tokens,
                 retrieval_query_vector_ms=metrics.retrieval_query_vector_ms,
                 retrieval_ann_ms=metrics.retrieval_ann_ms,
@@ -665,9 +694,7 @@ class RagRuntime:
                 accepted_revision=metrics.accepted_revision,
                 accepted_from_fallback=metrics.accepted_from_fallback,
                 accepted_ready_before_commit=metrics.accepted_ready_before_commit,
-                accepted_speculative_completed_ms=(
-                    metrics.accepted_retrieval_completed_ms
-                ),
+                accepted_speculative_completed_ms=(metrics.accepted_retrieval_completed_ms),
                 commit_gate_ms=commit_gate_ms,
             ),
             committed_ms=committed_ms,
@@ -688,6 +715,26 @@ class RagRuntime:
         send,
     ) -> None:
         sources = self._sources(retrieval.result)
+        accepted_lead_ms = max(0.0, committed_ms - retrieval.retrieval_ready_ms)
+        accepted_candidate_lead_ms = (
+            max(0.0, committed_ms - retrieval.accepted_speculative_completed_ms)
+            if retrieval.accepted_speculative_completed_ms is not None
+            else 0.0
+        )
+        speculative_lead_ms = (
+            max(0.0, committed_ms - retrieval.first_speculative_ready_ms)
+            if retrieval.first_speculative_ready_ms is not None
+            else 0.0
+        )
+        reuse_mode = self._reuse_mode(path, retrieval, accepted_candidate_lead_ms)
+        retrieval_embedding_tokens = retrieval.retrieval_embedding_tokens
+        tool_embedding_tokens = 0
+        incomplete_tool_traces: list[dict] = []
+        embedding_usd = (
+            retrieval_embedding_tokens
+            * self.settings.embedding_input_per_million
+            / 1_000_000
+        )
         await send(
             {
                 "type": "answer.started",
@@ -700,64 +747,183 @@ class RagRuntime:
         first_token_ms = None
         answer = ""
         agent_usage = Usage()
+        persistence_usage = Usage()
         tool_traces: list[dict] = []
         tool_started_ms: dict[str, float] = {}
         tool_wall_ms = 0.0
+        compression_calls: int | None = None
         generation_started_ms = time.perf_counter() * 1000
+        answer_completed_ms: float | None = None
+        persistence_started_ms: float | None = None
+        persistence_completed_ms: float | None = None
+        persistence_status = "not_started"
+        event_stream = self.agent.stream(
+            session_key=f"{request.session_id}:{path}",
+            question=request.text,
+            evidence=evidence_block(
+                retrieval.result.hits,
+                self.settings.context_token_budget,
+            ),
+            query_time=request.query_time,
+            cache_scope=self._cache_scope(request.session_id, path),
+        )
+        events = aiter(event_stream)
         try:
-            async with asyncio.timeout(self.settings.answer_timeout_s):
-                async for event in self.agent.stream(
-                    session_key=f"{request.session_id}:{path}",
-                    question=request.text,
-                    evidence=evidence_block(
-                        retrieval.result.hits,
-                        self.settings.context_token_budget,
-                    ),
-                    query_time=request.query_time,
-                    cache_scope=self._cache_scope(request.session_id, path),
-                ):
-                    if event["type"] == "answer.delta":
-                        if first_token_ms is None:
-                            first_token_ms = time.perf_counter() * 1000
-                        answer += event["text"]
-                        await send(
-                            {**event, "run_id": run_id, "turn_id": turn_id, "path": path}
-                        )
-                    elif event["type"] == "agent.completed":
-                        answer = event["answer"]
-                        agent_usage = event["usage"]
-                        tool_traces = event.get("tool_traces", [])
-                    else:
-                        if event["type"] == "agent.tool_started":
-                            tool_started_ms[str(event.get("tool_call_id", "unknown"))] = (
-                                time.perf_counter() * 1000
+            try:
+                async with asyncio.timeout(self.settings.answer_timeout_s):
+                    while answer_completed_ms is None:
+                        try:
+                            event = await anext(events)
+                        except StopAsyncIteration:
+                            raise RuntimeError(
+                                "grounded agent ended before generation completed"
+                            ) from None
+                        if event["type"] == "answer.delta":
+                            if first_token_ms is None:
+                                first_token_ms = time.perf_counter() * 1000
+                            answer += event["text"]
+                            await send(
+                                {**event, "run_id": run_id, "turn_id": turn_id, "path": path}
                             )
-                        elif event["type"] == "agent.tool_completed":
-                            started = tool_started_ms.pop(
-                                str(event.get("tool_call_id", "unknown")),
-                                None,
+                        elif event["type"] == "agent.completed":
+                            answer = event["answer"]
+                            agent_usage = event["usage"]
+                            tool_traces = event.get("tool_traces", [])
+                            answer_completed_ms = time.perf_counter() * 1000
+                            sources = self._merge_tool_sources(sources, tool_traces)
+                            tool_embedding_tokens = sum(
+                                int(trace.get("embedding_tokens", 0))
+                                for trace in tool_traces
                             )
-                            if started is not None:
-                                tool_wall_ms += time.perf_counter() * 1000 - started
-                        await send(
-                            {**event, "run_id": run_id, "turn_id": turn_id, "path": path}
-                        )
-        except TimeoutError:
-            raise RuntimeError("grounded answer timed out") from None
-        completed_ms = time.perf_counter() * 1000
+                            incomplete_tool_traces = [
+                                trace
+                                for trace in tool_traces
+                                if trace.get("accounting_complete") is not True
+                            ]
+                            embedding_usd = (
+                                (retrieval_embedding_tokens + tool_embedding_tokens)
+                                * self.settings.embedding_input_per_million
+                                / 1_000_000
+                            )
+                            ready_usage = Usage()
+                            ready_usage.add(retrieval.controller_usage)
+                            ready_usage.add(agent_usage)
+                            ready_model_usd = model_cost(
+                                ready_usage, self.settings
+                            ).total_usd
+                            await send(
+                                {
+                                    "type": "answer.ready",
+                                    "run_id": run_id,
+                                    "turn_id": turn_id,
+                                    "path": path,
+                                    "answer": answer,
+                                    "sources": sources,
+                                    "timing": {
+                                        "submit_to_first_token_ms": (
+                                            first_token_ms - committed_ms
+                                            if first_token_ms is not None
+                                            else None
+                                        ),
+                                        "total_response_ms": (answer_completed_ms - committed_ms),
+                                        "accepted_retrieval_lead_at_commit_ms": (
+                                            accepted_lead_ms
+                                        ),
+                                        "accepted_candidate_retrieval_lead_ms": (
+                                            accepted_candidate_lead_ms
+                                        ),
+                                    },
+                                    "retrieval": {
+                                        "cache_hit": retrieval.result.cache_hit,
+                                        "calls": retrieval.retrieval_calls,
+                                    },
+                                    "controller": {
+                                        "calls": retrieval.controller_calls,
+                                    },
+                                    "reuse": {
+                                        "mode": reuse_mode,
+                                        "commit_fallbacks": retrieval.commit_fallbacks,
+                                    },
+                                    "tool_traces": tool_traces,
+                                    "estimated_cost_usd": {
+                                        "model": ready_model_usd,
+                                        "query_embedding": embedding_usd,
+                                        "total": ready_model_usd + embedding_usd,
+                                        "accounting_complete": False,
+                                        "unpriced_post_answer_persistence": True,
+                                    },
+                                }
+                            )
+                        else:
+                            if event["type"] == "agent.tool_started":
+                                tool_started_ms[str(event.get("tool_call_id", "unknown"))] = (
+                                    time.perf_counter() * 1000
+                                )
+                            elif event["type"] == "agent.tool_completed":
+                                started = tool_started_ms.pop(
+                                    str(event.get("tool_call_id", "unknown")),
+                                    None,
+                                )
+                                if started is not None:
+                                    tool_wall_ms += time.perf_counter() * 1000 - started
+                            await send(
+                                {**event, "run_id": run_id, "turn_id": turn_id, "path": path}
+                            )
+            except TimeoutError:
+                raise RuntimeError("grounded answer timed out") from None
 
-        sources = self._merge_tool_sources(sources, tool_traces)
+            persistence_started_ms = time.perf_counter() * 1000
+            persistence_status = "in_progress"
+            try:
+                async with asyncio.timeout(self.settings.post_answer_persistence_timeout_s):
+                    while True:
+                        try:
+                            event = await anext(events)
+                        except StopAsyncIteration:
+                            break
+                        if event["type"] == "agent.context_compressed":
+                            await send(
+                                {**event, "run_id": run_id, "turn_id": turn_id, "path": path}
+                            )
+                        elif event["type"] == "agent.persisted":
+                            persistence_usage = event["usage"]
+                            compression_calls = int(event["compression_calls"])
+                            persistence_status = "completed"
+                        else:
+                            raise RuntimeError(
+                                f"unexpected post-answer agent event: {event['type']}"
+                            )
+                if persistence_status != "completed":
+                    raise RuntimeError("grounded agent ended before persistence completed")
+            except TimeoutError:
+                persistence_status = "timeout"
+                logger.warning(
+                    "post-answer persistence timed out for run_id=%s path=%s",
+                    run_id,
+                    path,
+                )
+            except Exception:
+                persistence_status = "failed"
+                logger.exception(
+                    "post-answer persistence failed for run_id=%s path=%s",
+                    run_id,
+                    path,
+                )
+            finally:
+                persistence_completed_ms = time.perf_counter() * 1000
+        finally:
+            close = getattr(events, "aclose", None)
+            if close is not None:
+                await close()
+
+        if answer_completed_ms is None or persistence_completed_ms is None:
+            raise RuntimeError("grounded answer lifecycle ended without completion timestamps")
+
         usage = Usage()
         usage.add(retrieval.controller_usage)
         usage.add(agent_usage)
+        usage.add(persistence_usage)
         model_usd = model_cost(usage, self.settings).total_usd
-        retrieval_embedding_tokens = retrieval.retrieval_embedding_tokens
-        tool_embedding_tokens = sum(
-            int(trace.get("embedding_tokens", 0)) for trace in tool_traces
-        )
-        incomplete_tool_traces = [
-            trace for trace in tool_traces if trace.get("accounting_complete") is not True
-        ]
         embedding_tokens = retrieval_embedding_tokens + tool_embedding_tokens
         embedding_usd = (
             embedding_tokens * self.settings.embedding_input_per_million / 1_000_000
@@ -771,23 +937,13 @@ class RagRuntime:
             and retrieval.retrieval_failures == 0
             and retrieval.endpoint_failures == 0
             and not incomplete_tool_traces
-        )
-        accepted_lead_ms = max(0.0, committed_ms - retrieval.retrieval_ready_ms)
-        accepted_candidate_lead_ms = (
-            max(0.0, committed_ms - retrieval.accepted_speculative_completed_ms)
-            if retrieval.accepted_speculative_completed_ms is not None
-            else 0.0
-        )
-        speculative_lead_ms = (
-            max(0.0, committed_ms - retrieval.first_speculative_ready_ms)
-            if retrieval.first_speculative_ready_ms is not None
-            else 0.0
+            and persistence_status == "completed"
         )
         timing = {
             "submit_to_first_token_ms": (
                 first_token_ms - committed_ms if first_token_ms is not None else None
             ),
-            "total_response_ms": completed_ms - committed_ms,
+            "total_response_ms": answer_completed_ms - committed_ms,
             "queue_before_path_ms": committed_ms - request_started_ms,
             "retrieval_ms": retrieval.result.elapsed_ms,
             "query_vector_ms": retrieval.result.query_vector_ms,
@@ -802,29 +958,14 @@ class RagRuntime:
             "generation_to_first_token_ms": (
                 first_token_ms - generation_started_ms if first_token_ms is not None else None
             ),
-            "generation_ms": completed_ms - generation_started_ms,
+            "generation_ms": answer_completed_ms - generation_started_ms,
+            "post_answer_persistence_ms": (
+                persistence_completed_ms - persistence_started_ms
+                if persistence_started_ms is not None
+                else None
+            ),
             "local_tool_wall_ms": tool_wall_ms,
         }
-        if (
-            path == "stream"
-            and retrieval.accepted_from_fallback is False
-            and retrieval.accepted_ready_before_commit
-        ):
-            reuse_mode = (
-                "precommit_revalidated"
-                if retrieval.evidence_revalidations
-                else "precommit_exact"
-            )
-        elif (
-            path == "stream"
-            and retrieval.accepted_from_fallback is False
-            and accepted_candidate_lead_ms > 0
-        ):
-            reuse_mode = "presubmit_retrieval_revalidated_at_commit"
-        elif path == "stream" and retrieval.accepted_from_fallback is False:
-            reuse_mode = "inflight_completed_postcommit"
-        else:
-            reuse_mode = "commit_endpoint"
         record = {
             "schema_version": 2,
             "run_id": run_id,
@@ -849,6 +990,7 @@ class RagRuntime:
                 "started_ms": retrieval.retrieval_started_ms,
                 "ready_ms": retrieval.retrieval_ready_ms,
                 "calls": retrieval.retrieval_calls,
+                "raw_candidate_calls": retrieval.raw_retrieval_calls,
                 "timeouts": retrieval.retrieval_timeouts,
                 "failures": retrieval.retrieval_failures,
                 "first_speculative_started_ms": retrieval.first_speculative_started_ms,
@@ -873,6 +1015,11 @@ class RagRuntime:
                 "retrieval_cancellations": retrieval.retrieval_cancellations,
                 "endpoint_failures": retrieval.endpoint_failures,
             },
+            "persistence": {
+                "status": persistence_status,
+                "elapsed_ms": timing["post_answer_persistence_ms"],
+                "compression_calls": compression_calls,
+            },
             "tool_traces": tool_traces,
             "usage": asdict(usage),
             "estimated_cost_usd": {
@@ -888,6 +1035,7 @@ class RagRuntime:
                 "unpriced_retrieval_failure_calls": retrieval.retrieval_failures,
                 "unpriced_endpoint_failure_calls": retrieval.endpoint_failures,
                 "unpriced_local_tool_calls": len(incomplete_tool_traces),
+                "unpriced_post_answer_persistence": persistence_status != "completed",
             },
         }
         await self.logger.write(record)
@@ -904,6 +1052,7 @@ class RagRuntime:
                 "retrieval": record["retrieval"],
                 "controller": record["controller"],
                 "reuse": record["reuse"],
+                "persistence": record["persistence"],
                 "tool_traces": tool_traces,
                 "usage": record["usage"],
                 "estimated_cost_usd": record["estimated_cost_usd"],
@@ -933,6 +1082,32 @@ class RagRuntime:
                     merged.append(source)
         return merged
 
+    @staticmethod
+    def _reuse_mode(
+        path: str,
+        retrieval: PathTelemetry,
+        accepted_candidate_lead_ms: float,
+    ) -> str:
+        if (
+            path == "stream"
+            and retrieval.accepted_from_fallback is False
+            and retrieval.accepted_ready_before_commit
+        ):
+            return (
+                "precommit_revalidated"
+                if retrieval.evidence_revalidations
+                else "precommit_exact"
+            )
+        if (
+            path == "stream"
+            and retrieval.accepted_from_fallback is False
+            and accepted_candidate_lead_ms > 0
+        ):
+            return "presubmit_retrieval_revalidated_at_commit"
+        if path == "stream" and retrieval.accepted_from_fallback is False:
+            return "inflight_completed_postcommit"
+        return "commit_endpoint"
+
     def _schedule_channel_cleanup(self, key: str, delay_s: float = 300.0) -> None:
         async def cleanup() -> None:
             await asyncio.sleep(delay_s)
@@ -942,6 +1117,27 @@ class RagRuntime:
         self.maintenance_tasks.add(task)
         task.add_done_callback(self.maintenance_tasks.discard)
 
+    def _prune_terminal_turns_locked(self, *, protected_turn_id: str | None = None) -> None:
+        """Bound completed tombstones without evicting in-progress commit setup."""
+        overflow = len(self.terminal_turns) - self.terminal_turn_limit
+        if overflow <= 0:
+            return
+        for turn_id, reservation in tuple(self.terminal_turns.items()):
+            if overflow <= 0:
+                return
+            if (
+                turn_id == protected_turn_id
+                or turn_id in self.turn_tasks
+                or (reservation is not None and not reservation.started)
+            ):
+                continue
+            self.terminal_turns.pop(turn_id, None)
+            overflow -= 1
+
+    async def _prune_terminal_turns(self) -> None:
+        async with self._turn_lock:
+            self._prune_terminal_turns_locked()
+
     async def cancel_turn(self, turn_id: str) -> None:
         async with self._turn_lock:
             pending = self.terminal_turns.get(turn_id)
@@ -949,6 +1145,7 @@ class RagRuntime:
                 pending.setup_error = "turn cancelled during commit setup"
                 pending.ready.set()
             self.terminal_turns[turn_id] = None
+            self._prune_terminal_turns_locked(protected_turn_id=turn_id)
             run_tasks = list(self.turn_tasks.pop(turn_id, ()))
             coordinator = self.turns.pop(turn_id, None)
             self.turn_bindings.pop(turn_id, None)

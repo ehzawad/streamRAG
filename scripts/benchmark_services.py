@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Prepare and run two isolated local API processes for the final A/B benchmark.
+"""Prepare and run two isolated local API processes for A/B evaluation.
 
-This script never runs benchmark questions and never bypasses dataset approval. The
-`sync` command indexes the same approved corpus into two separate local Qdrant paths;
-the `serve` command keeps both isolated processes in the foreground until interrupted.
+Final mode remains approval-gated and accepts only the redacted inference bundle.
+An explicit development-candidate mode provisions the same isolated topology for
+the dev-only smoke runner; it cannot make an artifact reportable or select queries.
 """
 
 from __future__ import annotations
@@ -111,7 +111,8 @@ def require_approved_dataset(dataset_dir: Path) -> dict[str, Any]:
     if status != "approved_frozen":
         raise RuntimeError(
             f"dataset is {status!r}, not 'approved_frozen': {dataset_dir}. "
-            "This launcher never sets ALLOW_UNREVIEWED_DATASET."
+            "Final mode never sets ALLOW_UNREVIEWED_DATASET; use the explicit "
+            "development-candidate targets only for dev smoke data."
         )
     forbidden_gold = [path.name for path in dataset_dir.iterdir() if "gold" in path.name.casefold()]
     if forbidden_gold:
@@ -153,6 +154,71 @@ def require_approved_dataset(dataset_dir: Path) -> dict[str, Any]:
     }
 
 
+def require_development_candidate(dataset_dir: Path) -> dict[str, Any]:
+    """Validate the canonical candidate without reading or selecting test questions."""
+    status = dataset_status(dataset_dir)
+    if status != "candidate_pending_human_review":
+        raise RuntimeError(
+            "development mode requires 'candidate_pending_human_review', "
+            f"got {status!r}: {dataset_dir}"
+        )
+    if (dataset_dir / "inference_bundle.json").exists():
+        raise RuntimeError("development mode refuses an inference bundle")
+    required = {
+        "checksums.sha256",
+        "dataset_summary.json",
+        "dev_queries.jsonl",
+        "selection_manifest.json",
+    }
+    missing = sorted(name for name in required if not (dataset_dir / name).is_file())
+    if missing:
+        raise RuntimeError(f"development dataset is missing files: {missing}")
+    documents = next(
+        (
+            dataset_dir / name
+            for name in ("documents.jsonl.bz2", "documents.jsonl")
+            if (dataset_dir / name).is_file()
+        ),
+        None,
+    )
+    if documents is None:
+        raise RuntimeError("development dataset is missing documents")
+    checksums = read_checksum_manifest(dataset_dir / "checksums.sha256")
+    required_entries = (required - {"checksums.sha256"}) | {documents.name}
+    if not required_entries.issubset(checksums):
+        raise RuntimeError("development checksum manifest is missing required entries")
+    for name, expected in checksums.items():
+        if Path(name).name != name:
+            raise RuntimeError(f"development checksum entry is not a basename: {name}")
+        path = dataset_dir / name
+        if not path.is_file() or sha256_file(path) != expected:
+            raise RuntimeError(f"development dataset checksum mismatch: {name}")
+    try:
+        dev_rows = [
+            json.loads(line)
+            for line in (dataset_dir / "dev_queries.jsonl").read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("development queries are invalid JSONL") from exc
+    expected_count = json.loads(
+        (dataset_dir / "dataset_summary.json").read_text(encoding="utf-8")
+    ).get("selection", {}).get("dev_questions")
+    if not dev_rows or len(dev_rows) != expected_count:
+        raise RuntimeError("development query count does not match dataset summary")
+    if any(not str(row.get("id") or "").startswith("crag-text-dev-") for row in dev_rows):
+        raise RuntimeError("development query file contains a non-development ID")
+    manifest_sha256 = sha256_file(dataset_dir / "checksums.sha256")
+    return {
+        "approval_status": status,
+        "bundle_role": "development_candidate",
+        "evaluation_manifest_sha256": manifest_sha256,
+        "serving_dataset_checksum": manifest_sha256,
+        "freeze_id": freeze_id(manifest_sha256),
+        "documents_sha256": sha256_file(documents),
+    }
+
+
 def instances(args: argparse.Namespace) -> tuple[Instance, Instance]:
     state_root = args.state_root.resolve()
     naive = Instance("naive", args.naive_port, state_root / "naive")
@@ -166,11 +232,16 @@ def instances(args: argparse.Namespace) -> tuple[Instance, Instance]:
     return naive, stream
 
 
-def child_environment(dataset_dir: Path, instance: Instance) -> dict[str, str]:
+def child_environment(
+    dataset_dir: Path,
+    instance: Instance,
+    *,
+    allow_unreviewed_dataset: bool = False,
+) -> dict[str, str]:
     environment = os.environ.copy()
     environment.update(
         {
-            "ALLOW_UNREVIEWED_DATASET": "0",
+            "ALLOW_UNREVIEWED_DATASET": "1" if allow_unreviewed_dataset else "0",
             "DATASET_DIR": str(dataset_dir),
             # Empty values override any .env managed-Qdrant settings and force separate
             # persisted local stores for the two benchmark processes.
@@ -185,7 +256,12 @@ def child_environment(dataset_dir: Path, instance: Instance) -> dict[str, str]:
     return environment
 
 
-def start_service(dataset_dir: Path, instance: Instance) -> ServiceProcess:
+def start_service(
+    dataset_dir: Path,
+    instance: Instance,
+    *,
+    allow_unreviewed_dataset: bool,
+) -> ServiceProcess:
     instance.state_dir.mkdir(parents=True, exist_ok=True)
     log_handle = instance.service_log.open("ab", buffering=0)
     command = [
@@ -202,7 +278,11 @@ def start_service(dataset_dir: Path, instance: Instance) -> ServiceProcess:
         process = subprocess.Popen(
             command,
             cwd=ROOT,
-            env=child_environment(dataset_dir, instance),
+            env=child_environment(
+                dataset_dir,
+                instance,
+                allow_unreviewed_dataset=allow_unreviewed_dataset,
+            ),
             stdout=log_handle,
             stderr=subprocess.STDOUT,
         )
@@ -258,10 +338,13 @@ def validate_status(
     name: str,
     *,
     require_index: bool,
-    bundle: dict[str, Any] | None = None,
+    contract: dict[str, Any] | None = None,
 ) -> None:
-    if status.get("approval_status") != "approved_frozen":
-        raise RuntimeError(f"{name} API does not expose approved_frozen data")
+    expected_approval = (
+        str(contract["approval_status"]) if contract is not None else "approved_frozen"
+    )
+    if status.get("approval_status") != expected_approval:
+        raise RuntimeError(f"{name} API does not expose {expected_approval} data")
     if require_index and int(status.get("indexed_chunks") or 0) <= 0:
         raise RuntimeError(f"{name} index is empty; run the sync command first")
     missing = [field for field in IDENTITY_FIELDS if status.get(field) is None]
@@ -275,16 +358,16 @@ def validate_status(
         raise RuntimeError(f"{name} indexed chunk count does not match desired chunks")
     if require_index and status["index_source_sha256"] != status["current_index_source_sha256"]:
         raise RuntimeError(f"{name} index source fingerprint is stale")
-    if bundle is not None:
+    if contract is not None:
         expected = {
-            "dataset_checksum": bundle["evaluation_manifest_sha256"],
-            "serving_dataset_checksum": bundle["serving_dataset_checksum"],
-            "freeze_id": bundle["freeze_id"],
-            "documents_sha256": bundle["documents_sha256"],
+            "dataset_checksum": contract["evaluation_manifest_sha256"],
+            "serving_dataset_checksum": contract["serving_dataset_checksum"],
+            "freeze_id": contract["freeze_id"],
+            "documents_sha256": contract["documents_sha256"],
         }
         mismatches = [field for field, value in expected.items() if status.get(field) != value]
         if mismatches:
-            raise RuntimeError(f"{name} does not serve the selected inference bundle: {mismatches}")
+            raise RuntimeError(f"{name} does not serve the selected dataset: {mismatches}")
 
 
 def compare_statuses(statuses: dict[str, dict[str, Any]]) -> None:
@@ -305,14 +388,18 @@ def public_configuration(
     dataset_dir: Path,
     state_root: Path,
     pair: tuple[Instance, Instance],
-    bundle: dict[str, Any],
+    contract: dict[str, Any],
+    *,
+    development_candidate: bool,
 ) -> dict[str, Any]:
     return {
         "dataset_dir": str(dataset_dir),
-        "approval_status": bundle["approval_status"],
-        "bundle_role": bundle["bundle_role"],
-        "freeze_id": bundle["freeze_id"],
-        "allow_unreviewed_dataset": False,
+        "approval_status": contract["approval_status"],
+        "bundle_role": contract["bundle_role"],
+        "freeze_id": contract["freeze_id"],
+        "mode": "development_candidate" if development_candidate else "final_approved",
+        "allow_unreviewed_dataset": development_candidate,
+        "reportable": False if development_candidate else "determined_by_runner",
         "openai_api_key_configured": bool(os.getenv("OPENAI_API_KEY")),
         "state_root": str(state_root),
         "instances": {
@@ -332,7 +419,11 @@ def preflight(
     args: argparse.Namespace, *, require_api_key: bool
 ) -> tuple[tuple[Instance, Instance], dict[str, Any]]:
     dataset_dir = args.dataset_dir.resolve()
-    bundle = require_approved_dataset(dataset_dir)
+    contract = (
+        require_development_candidate(dataset_dir)
+        if args.development_candidate
+        else require_approved_dataset(dataset_dir)
+    )
     pair = instances(args)
     if require_api_key and not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is not configured in the environment or .env")
@@ -342,44 +433,64 @@ def preflight(
                 dataset_dir,
                 args.state_root.resolve(),
                 pair,
-                bundle,
+                contract,
+                development_candidate=args.development_candidate,
             ),
             indent=2,
             sort_keys=True,
         )
     )
-    return pair, bundle
+    return pair, contract
 
 
 def sync_instance(
     dataset_dir: Path,
-    bundle: dict[str, Any],
+    contract: dict[str, Any],
     instance: Instance,
     timeout_s: float,
+    *,
+    development_candidate: bool,
 ) -> dict[str, Any]:
-    service = start_service(dataset_dir, instance)
+    service = start_service(
+        dataset_dir,
+        instance,
+        allow_unreviewed_dataset=development_candidate,
+    )
     try:
         initial = wait_for_status(service, timeout_s)
-        validate_status(initial, instance.name, require_index=False, bundle=bundle)
+        validate_status(initial, instance.name, require_index=False, contract=contract)
         response = httpx.post(
             f"{instance.base_url}/v1/data/sync",
             timeout=httpx.Timeout(30, read=None),
         )
         response.raise_for_status()
+        try:
+            sync_report = response.json()
+        except ValueError as exc:
+            raise RuntimeError(f"{instance.name} sync returned invalid JSON") from exc
+        if not isinstance(sync_report, dict):
+            raise RuntimeError(f"{instance.name} sync returned a non-object report")
         status_response = httpx.get(f"{instance.base_url}/v1/data/status", timeout=10)
         status_response.raise_for_status()
         status = status_response.json()
-        validate_status(status, instance.name, require_index=True, bundle=bundle)
+        validate_status(status, instance.name, require_index=True, contract=contract)
+        status["sync_report"] = sync_report
         return status
     finally:
         stop_service(service)
 
 
 def command_sync(args: argparse.Namespace) -> None:
-    pair, bundle = preflight(args, require_api_key=True)
+    pair, contract = preflight(args, require_api_key=True)
     dataset_dir = args.dataset_dir.resolve()
     statuses = {
-        instance.name: sync_instance(dataset_dir, bundle, instance, args.startup_timeout_s)
+        instance.name: sync_instance(
+            dataset_dir,
+            contract,
+            instance,
+            args.startup_timeout_s,
+            development_candidate=args.development_candidate,
+        )
         for instance in pair
     }
     # Instance IDs differ because sync is sequential, and all content/config/index
@@ -388,28 +499,35 @@ def command_sync(args: argparse.Namespace) -> None:
     output = args.state_root.resolve() / "sync-status.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(statuses, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"Synced two isolated approved indexes. Status: {output}")
+    label = "development-candidate" if args.development_candidate else "approved"
+    print(f"Synced two isolated {label} indexes. Status: {output}")
 
 
 def command_serve(args: argparse.Namespace) -> None:
-    pair, bundle = preflight(args, require_api_key=True)
+    pair, contract = preflight(args, require_api_key=True)
     dataset_dir = args.dataset_dir.resolve()
     services: list[ServiceProcess] = []
     try:
         for instance in pair:
-            services.append(start_service(dataset_dir, instance))
+            services.append(
+                start_service(
+                    dataset_dir,
+                    instance,
+                    allow_unreviewed_dataset=args.development_candidate,
+                )
+            )
         statuses = {
             service.instance.name: wait_for_status(service, args.startup_timeout_s)
             for service in services
         }
         for name, status in statuses.items():
-            validate_status(status, name, require_index=True, bundle=bundle)
+            validate_status(status, name, require_index=True, contract=contract)
         compare_statuses(statuses)
+        next_command = "make benchmark-smoke" if args.development_candidate else "make benchmark"
         print(
             "Two isolated services are ready. In another terminal run:\n"
-            "  make benchmark NAIVE_BASE_URL=http://127.0.0.1:8001 "
-            "STREAM_BASE_URL=http://127.0.0.1:8002\n"
-            "Press Ctrl-C here after the benchmark finishes."
+            f"  {next_command}\n"
+            "Press Ctrl-C here after the run finishes."
         )
         while True:
             for service in services:
@@ -429,10 +547,11 @@ def command_serve(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Sync and serve two isolated, approval-gated benchmark APIs",
+        description="Sync and serve two isolated evaluation APIs",
         epilog=(
-            "check is read-only; sync makes real embedding calls but runs no test queries; "
-            "serve stays in the foreground and never bypasses approval"
+            "Final mode is approval-gated. --development-candidate explicitly allows "
+            "candidate indexing for the non-reportable dev-only smoke runner. The service "
+            "launcher itself never executes questions."
         ),
     )
     parser.add_argument(
@@ -442,6 +561,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dataset-dir", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--state-root", type=Path, default=DEFAULT_STATE_ROOT)
+    parser.add_argument(
+        "--development-candidate",
+        action="store_true",
+        help=(
+            "accept only candidate_pending_human_review data and set the child API's "
+            "development override; never valid for a final run"
+        ),
+    )
     parser.add_argument("--naive-port", type=int, default=8001)
     parser.add_argument("--stream-port", type=int, default=8002)
     parser.add_argument("--startup-timeout-s", type=float, default=60.0)

@@ -41,7 +41,6 @@ class Settings:
     embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
     openai_embedding_timeout_s: float = float(os.getenv("OPENAI_EMBEDDING_TIMEOUT_S", "45"))
     openai_embedding_max_retries: int = int(os.getenv("OPENAI_EMBEDDING_MAX_RETRIES", "1"))
-    openai_model_max_retries: int = int(os.getenv("OPENAI_MODEL_MAX_RETRIES", "1"))
     allow_unreviewed_dataset: bool = _bool("ALLOW_UNREVIEWED_DATASET", False)
 
     chunk_tokens: int = int(os.getenv("CHUNK_TOKENS", "400"))
@@ -56,10 +55,14 @@ class Settings:
     trigger_min_new_tokens: int = int(os.getenv("TRIGGER_MIN_NEW_TOKENS", "3"))
     trigger_interval_ms: int = int(os.getenv("TRIGGER_INTERVAL_MS", "500"))
     trigger_max_presubmit_calls: int = int(os.getenv("TRIGGER_MAX_PRESUBMIT_CALLS", "4"))
+    parallel_raw_retrieval: bool = _bool("PARALLEL_RAW_RETRIEVAL", True)
     trigger_timeout_s: float = float(os.getenv("TRIGGER_TIMEOUT_S", "4.0"))
     retrieval_timeout_s: float = float(os.getenv("RETRIEVAL_TIMEOUT_S", "6.0"))
     answer_timeout_s: float = float(os.getenv("ANSWER_TIMEOUT_S", "30.0"))
     summary_timeout_s: float = float(os.getenv("SUMMARY_TIMEOUT_S", "8.0"))
+    post_answer_persistence_timeout_s: float = float(
+        os.getenv("POST_ANSWER_PERSISTENCE_TIMEOUT_S", "10.0")
+    )
     turn_idle_timeout_s: float = float(os.getenv("TURN_IDLE_TIMEOUT_S", "120"))
     session_retention_hours: float = float(os.getenv("SESSION_RETENTION_HOURS", "24"))
     query_cache_size: int = int(os.getenv("QUERY_CACHE_SIZE", "512"))
@@ -110,17 +113,20 @@ class Settings:
             raise ValueError("OPENAI_EMBEDDING_TIMEOUT_S must be positive")
         if not 0 <= self.openai_embedding_max_retries <= 3:
             raise ValueError("OPENAI_EMBEDDING_MAX_RETRIES must be between 0 and 3")
-        if not 0 <= self.openai_model_max_retries <= 2:
-            raise ValueError("OPENAI_MODEL_MAX_RETRIES must be between 0 and 2")
         if min(
             self.trigger_timeout_s,
             self.retrieval_timeout_s,
             self.answer_timeout_s,
             self.summary_timeout_s,
+            self.post_answer_persistence_timeout_s,
             self.turn_idle_timeout_s,
             self.session_retention_hours,
         ) <= 0:
             raise ValueError("runtime deadlines and retention windows must be positive")
+        if self.post_answer_persistence_timeout_s <= self.summary_timeout_s:
+            raise ValueError(
+                "POST_ANSWER_PERSISTENCE_TIMEOUT_S must exceed SUMMARY_TIMEOUT_S"
+            )
 
 
 settings = Settings()
