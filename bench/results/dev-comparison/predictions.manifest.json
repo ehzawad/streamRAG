@@ -1,7 +1,7 @@
 {
   "backend_instance_ids": {
-    "naive": "e2bd910d-b990-48a3-83a9-0f12dd507539",
-    "stream": "189ba664-6b72-4cf5-97dc-b3fe4e179362"
+    "naive": "34c41620-e00d-45f2-b3e5-3e1cd916e9b1",
+    "stream": "a206c939-b0d8-4684-8d87-6de8510f4667"
   },
   "benchmark_harness_sha256": {
     "run_benchmark.py": "1577178089ee98b0141dc909b9b941f43a7229c8816900d17c9411426f4bc830",
@@ -40,12 +40,12 @@
     "index_pipeline_version"
   ],
   "completed_outputs": 10,
-  "completed_unix_s": 1784347475.7258492,
-  "created_unix_s": 1784347294.8599901,
+  "completed_unix_s": 1784357747.484139,
+  "created_unix_s": 1784357555.821776,
   "data_status": {
     "naive": {
       "approval_status": "candidate_pending_human_review",
-      "backend_source_sha256": "08359f60c437670ae649f40be9da504aa950f19c2b3babf762a41a159ca494e5",
+      "backend_source_sha256": "f43885948a713d94abb6c2f7289e8cb1cc250ddb4ee5cbd6caabf02593ef0225",
       "config_hash": "d1dc885f8354dc46893597375f74810e7cc4b67ce3a3585c3ab78cfddb7ba0be",
       "current_index_source_sha256": "1c20c55d4ab58aa2c8621d60cae2d8dba5e41d0032a7218ac8ec0a19b64bfedf",
       "dataset_checksum": "8fd5d94b1a51516a042592884caba89ab617f178fc47a6c80f715a2323531c43",
@@ -63,7 +63,7 @@
       "index_version": 1,
       "indexed_chunks": 1000,
       "indexed_desired_chunks": 1000,
-      "instance_id": "e2bd910d-b990-48a3-83a9-0f12dd507539",
+      "instance_id": "34c41620-e00d-45f2-b3e5-3e1cd916e9b1",
       "model": "gpt-5.6-sol",
       "reasoning_effort": "medium",
       "service_tier": "default",
@@ -73,7 +73,7 @@
     },
     "stream": {
       "approval_status": "candidate_pending_human_review",
-      "backend_source_sha256": "08359f60c437670ae649f40be9da504aa950f19c2b3babf762a41a159ca494e5",
+      "backend_source_sha256": "f43885948a713d94abb6c2f7289e8cb1cc250ddb4ee5cbd6caabf02593ef0225",
       "config_hash": "d1dc885f8354dc46893597375f74810e7cc4b67ce3a3585c3ab78cfddb7ba0be",
       "current_index_source_sha256": "1c20c55d4ab58aa2c8621d60cae2d8dba5e41d0032a7218ac8ec0a19b64bfedf",
       "dataset_checksum": "8fd5d94b1a51516a042592884caba89ab617f178fc47a6c80f715a2323531c43",
@@ -91,7 +91,7 @@
       "index_version": 1,
       "indexed_chunks": 1000,
       "indexed_desired_chunks": 1000,
-      "instance_id": "189ba664-6b72-4cf5-97dc-b3fe4e179362",
+      "instance_id": "a206c939-b0d8-4684-8d87-6de8510f4667",
       "model": "gpt-5.6-sol",
       "reasoning_effort": "medium",
       "service_tier": "default",
@@ -115,7 +115,7 @@
   "prediction_rows_expected": 10,
   "prediction_rows_observed": 10,
   "predictions": "predictions.jsonl",
-  "predictions_sha256": "f904e3016640e9fcb0ecef128a445204798a74f188b324d870faf082b5eaf135",
+  "predictions_sha256": "0e15bc1320a91a8497a8c47e61907a6d197e201637447f36f84e15efab5c5e0c",
   "preregistered_protocol_gate": {
     "required_measured_repetitions": 1,
     "required_query_count": 10,
@@ -141,7 +141,7 @@
   "repetitions": 1,
   "reportable": false,
   "run_status": "completed_non_reportable",
-  "run_tag": "5c1e835eb6",
+  "run_tag": "a7bd28eb32",
   "schema_version": 4,
   "scorer_isolation": {
     "binding": "query SHA-256 plus opaque evaluation freeze_id",
@@ -171,7 +171,7 @@
   },
   "timing_drift_gate": {
     "max_allowed_abs_drift_ms": 100.0,
-    "max_observed_abs_drift_ms": 2.2429999709147523,
+    "max_observed_abs_drift_ms": 2.268886600222686,
     "observations": 10,
     "status": "complete",
     "violations": 0

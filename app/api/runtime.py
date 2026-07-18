@@ -792,7 +792,7 @@ class RagRuntime:
                             answer_completed_ms = time.perf_counter() * 1000
                             sources = self._merge_tool_sources(sources, tool_traces)
                             tool_embedding_tokens = sum(
-                                int(trace.get("embedding_tokens", 0))
+                                int(trace.get("embedding_tokens") or 0)
                                 for trace in tool_traces
                             )
                             incomplete_tool_traces = [

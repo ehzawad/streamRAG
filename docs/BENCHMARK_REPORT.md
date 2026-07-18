@@ -49,7 +49,7 @@ headroom is diagnostic and is never relabeled as latency saved.
 
 Configuration: five development questions × two isolated paths, no warm-up, one
 measured pass, deterministic 70-WPM typing, real OpenAI calls, real embeddings,
-and embedded Qdrant. Wall time was 180.8659 s.
+and embedded Qdrant. Wall time was 191.6624 s.
 
 The content-addressed predictions, run manifest, JSON summary, and rendered table
 are retained under [`bench/results/dev-comparison`](../bench/results/dev-comparison)
@@ -57,40 +57,40 @@ as explicitly non-final development evidence.
 
 | Path | Expected answer | Support + citation | Median TTFT | Median total | Model API calls | Controller calls | Retrievals | Observed cost |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Naive | 100% | 100% | 5,906.720 ms | 6,290.444 ms | 7 | 5 | 5 | ≥$0.06137975 |
-| Stream | 100% | 100% | 4,575.290 ms | 5,083.832 ms | 20 | 23 | 12 | ≥$0.11416807 |
+| Naive | 100% | 100% | 6,199.342 ms | 6,846.266 ms | 8 | 5 | 5 | ≥$0.06640001 |
+| Stream | 100% | 100% | 4,942.155 ms | 5,662.263 ms | 19 | 21 | 12 | ≥$0.10848677 |
 
 Expected-answer, evidence-support, citation-marker, supporting-document citation,
 and false-premise checks were all 100% for both paths across the applicable
 outputs; optional manual-adjudication coverage is 0%. This is correctness parity,
 not an accuracy improvement. Costs are lower bounds because cancelled, failed, or
 timed-out calls do not always return provider usage and are not silently priced at
-zero. Complete accounting was available for 2/5 Naive outputs and 0/5 Stream
+zero. Complete accounting was available for 3/5 Naive outputs and 0/5 Stream
 outputs, leaving zero complete cost pairs, so no paired cost delta is claimed.
-Mean observed lower-bound cost was at least $0.012275950 per Naive output and
-$0.022833614 per Stream output. Neither path needed a model-issued
+Mean observed lower-bound cost was at least $0.013280002 per Naive output and
+$0.021697354 per Stream output. Neither path needed a model-issued
 `search_local_crag` call after primary retrieval; controller and retrieval calls
 are reported separately.
 
 Paired results are the correct A/B comparison because the two path distributions
 contain different queries at their medians:
 
-- Stream won TTFT on 4/5 pairs (80%).
-- Median paired Stream-minus-Naive TTFT: **-628.907 ms (-12.0846%)**.
-- Paired p95 Stream-minus-Naive TTFT: **+275.880 ms**; one tail pair was slower.
-- Median paired Stream-minus-Naive total time: **-702.294 ms**.
+- Stream won TTFT on 5/5 pairs (100%).
+- Median paired Stream-minus-Naive TTFT: **-3,090.101 ms (-33.7579%)**.
+- Paired p95 Stream-minus-Naive TTFT: **-1,178.695 ms**; all five pairs were faster.
+- Median paired Stream-minus-Naive total time: **-1,251.090 ms**.
 - Mean accuracy delta: **0 percentage points**.
-- Stream commit fallback: 40%; compatible in-flight work completed after commit:
-  40%; provisional work reused after commit revalidation: 20%.
+- Stream commit fallback: 60%; compatible in-flight work completed after commit:
+  20%; provisional work reused after commit revalidation: 20%.
 - Accepted retrieval lead at commit: 0 ms on all five Stream cases. The one
-  ultimately reused raw candidate had 2,226.851 ms of candidate headroom, but raw
-  headroom is not accepted evidence lead or measured latency saved.
+  ultimately reused provisional candidate had 1,944.726 ms of candidate headroom,
+  but provisional headroom is not accepted evidence lead or measured latency saved.
 
 Negative latency deltas favor StreamRAG. These are five development pairs under
 live provider variance, not a causal estimate or a final benchmark. The manifest
 is finalized as `completed_non_reportable`, `reportable: false`, with zero failures,
 zero deadline failures, complete snapshot transport/cleanup gates, and a maximum
-typing drift of 2.243 ms.
+typing drift of 2.269 ms.
 
 ## Stabilization analysis
 
@@ -98,16 +98,16 @@ The preregistered candidate classes explain where the scheduling mechanism helpe
 
 | Candidate class | Questions | Stream TTFT wins | Median paired TTFT delta | Median paired total delta | Accuracy delta |
 |---|---:|---:|---:|---:|---:|
-| Early stabilization | 3 | 100% | -3,104.281 ms (-42.4121%) | -3,095.248 ms | 0 pp |
-| Late stabilization | 1 | 0% | +464.497 ms (+9.8034%) | +485.235 ms | 0 pp |
-| Revision / ambiguity | 1 | 100% | -478.590 ms (-8.1025%) | -531.226 ms | 0 pp |
+| Early stabilization | 3 | 100% | -3,128.927 ms (-33.7579%) | -1,251.090 ms | 0 pp |
+| Late stabilization | 1 | 100% | -1,159.071 ms (-18.9623%) | -1,153.976 ms | 0 pp |
+| Revision / ambiguity | 1 | 100% | -3,090.101 ms (-39.0957%) | -2,655.304 ms | 0 pp |
 
-All three early-labeled items and the one revision/ambiguity item were faster; the
-one late item was slower. With accepted pre-Send lead equal to zero, these tiny
+All three early-labeled items, the one late item, and the one revision/ambiguity
+item were faster. With accepted pre-Send lead equal to zero, these tiny
 strata describe one live run; they do not prove that the scheduling mechanism
 caused each delta or that every rerun will preserve the ordering. The defensible
-result is correctness parity and 4/5 observed development TTFT wins alongside one
-tail loss, higher work, and higher lower-bound cost—not a claim that StreamRAG is
+result is correctness parity and 5/5 observed development TTFT wins alongside
+higher work and higher lower-bound cost—not a claim that StreamRAG is
 universally faster, more accurate, or cheaper.
 
 ## Relation to the Stream RAG paper
@@ -123,8 +123,8 @@ may start one quarantined raw retrieval concurrently; the model predicts whether
 to wait, retrieve/refine, or keep that work, while final acceptance remains a
 complete-input commit-time decision. At most one speculative retrieval thread is
 active. The current development evidence shows correctness parity and observed
-favorable median latency with one tail loss while exposing extra calls, retrievals,
-and lower-bound cost.
+favorable median latency with all five TTFT wins while exposing extra calls,
+retrievals, and lower-bound cost.
 
 ## Frozen-test protocol (pending approval)
 

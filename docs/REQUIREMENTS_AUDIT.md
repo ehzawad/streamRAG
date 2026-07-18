@@ -32,10 +32,10 @@ The real five-question development comparison used `gpt-5.6-sol` (medium answer,
 low trigger/summary), `text-embedding-3-large`, two isolated processes, and no
 mocks. Both paths scored 100% expected-answer, evidence-support, supporting-
 citation, and false-premise correctness, so scheduling showed no accuracy gain.
-Stream won paired TTFT on 4/5 (80%): median Stream-minus-Naive TTFT was -628.907
-ms (-12.0846%), paired p95 TTFT delta was +275.880 ms because one tail pair was
-slower, and median total-time delta was -702.294 ms. Early, late, and
-revision/ambiguity slices won 3/3, 0/1, and 1/1, respectively. This is a small
+Stream won paired TTFT on 5/5 (100%): median Stream-minus-Naive TTFT was
+-3,090.101 ms (-33.7579%), paired p95 TTFT delta was -1,178.695 ms, and median
+total-time delta was -1,251.090 ms. Early, late, and revision/ambiguity slices won
+3/3, 1/1, and 1/1, respectively. This is a small
 non-final live run, not a promise of universal speedup. Stream used more
 model/retrieval work and had a higher observed lower-bound cost; incomplete
 provider accounting leaves no paired cost delta.

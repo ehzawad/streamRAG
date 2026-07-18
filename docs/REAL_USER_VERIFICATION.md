@@ -41,11 +41,15 @@ requested additional surfaces:
   trigger roles, and 1,000 points; observed raw typed prefetch before Send, then
   post-commit grounded completion of both Compare paths. This is flow/surface
   evidence only.
-- **macOS Computer Use:** an earlier implementation was visually inspected in
-  Google Chrome, but the post-`answer.ready` re-check could not run because macOS
-  was locked and automatic unlock failed. This surface is therefore not claimed
-  as current-code acceptance; headed Playwright, Chrome control, and the in-app
-  browser are the current-code checks.
+- **macOS Computer Use (current-code Chrome acceptance):** health showed
+  `gpt-5.6-sol`, medium answer / low trigger reasoning, and 1,000 chunks. After
+  typing the Bad Bunny development question and pausing six seconds before Send,
+  the UI showed **Evidence validated and ready — press Send** while both answer
+  panels still showed **No answer yet**. After Send, both paths correctly returned
+  **Un Verano Sin Ti** with one local citation each. Naive showed 5,945 ms TTFT /
+  7,183 ms total; Stream showed 1,551 ms / 2,019 ms, for illustrative concurrent
+  deltas of -4,393 ms TTFT and -5,164 ms total. This is current native UI evidence,
+  not isolated benchmark evidence.
 - **Chrome control (final browser action):** ran a full Compare on the same Bad
   Bunny development question. Both paths again returned and cited **Un Verano Sin
   Ti**, with raw prefetch visible before Send and the answer appearing only after
@@ -57,51 +61,38 @@ gate.
 
 ## Clean-clone reproduction
 
-A fresh local clone of the release tree reproduced the complete development
-workflow with the real environment and no copied runtime state:
-
-- dependency setup: 1.66 s;
-- checksum/data verification: 1.39 s;
-- 110 backend tests, frontend tests, and production build: 9.92 s;
-- isolated-service preflight: 0.07 s;
-- two new 1,000-point `text-embedding-3-large` indexes: 81.47 s total;
-- service readiness observation: about 5 s;
-- 10 real answer runs plus scoring: 186.14 s.
-
-That is about 4 minutes 46 seconds end to end, comfortably inside the requested
-15–20 minute ceiling. Both clean-clone paths again scored 100% answer and citation
-correctness with zero failures and no pre-Send answer events. Its live latency
-sample was 3/5 Stream TTFT wins and a -261.677 ms paired median, rather than the
-retained run's 4/5 and -628.907 ms. The clean-clone result is recorded here as a
-reproduction check, not substituted for the already-retained first post-fix run;
-the difference is direct evidence that five live pairs are too small for a stable
-latency estimate.
+The canonical clean-clone acceptance is setup, checksum verification, tests/build,
+two fresh real indexes, two isolated services, and a scored real-API smoke query.
+Its elapsed time is volatile operational evidence, not a benchmark metric. The
+earlier pre-fix timing and source-commit claim have been removed rather than
+carried forward as current evidence.
 
 ## Real API/index evidence already complete
 
-- A clean real OpenAI embedding build indexed 1,000/1,000 chunks in 40.94 s using
-  366,142 `text-embedding-3-large` tokens. No embedding or retrieval call was
-  mocked.
+- A real OpenAI embedding build indexed 1,000/1,000 chunks using 366,142
+  `text-embedding-3-large` tokens. No fixed index wall time is claimed because it
+  varies with provider and cache state. No embedding or retrieval call was mocked.
 - The retained comparison used the five checksum-bound dev questions, two live
   isolated backend processes, and real model calls. Both paths completed 5/5 at
   100% automatic expected-answer, evidence-support, supporting-citation, and
-  false-premise correctness. Stream won TTFT on 4/5 pairs with median paired
-  TTFT/total deltas of -628.907/-702.294 ms; the paired p95 TTFT delta was
-  +275.880 ms because one tail pair was slower. Naive median TTFT/total was
-  5,906.720/6,290.444 ms and Stream's was 4,575.290/5,083.832 ms. This is
+  false-premise correctness. Stream won TTFT on 5/5 pairs with median paired
+  TTFT/total deltas of -3,090.101/-1,251.090 ms; the paired p95 TTFT delta was
+  -1,178.695 ms. Naive median TTFT/total was 6,199.342/6,846.266 ms and Stream's
+  was 4,942.155/5,662.263 ms. This is
   correctness parity, not an accuracy gain, and the five live pairs are too small
   to promise the same ordering on every rerun.
-- Stream used 20 model calls, 23 controller calls, and 12 retrievals versus
-  Naive's 7, 5, and 5. Both paths made zero dynamic function-tool calls. Observed
-  costs were lower bounds: at least $0.11416807 Stream and $0.06137975 Naive;
-  complete accounting covered 0/5 and 2/5 outputs, respectively, so there is no
-  paired cost delta. The run took 180.866 s. The artifact is `reportable: false`;
+- Stream used 19 model calls, 21 controller calls, and 12 retrievals versus
+  Naive's 8, 5, and 5. Both paths made zero dynamic function-tool calls. Observed
+  costs were lower bounds: at least $0.10848677 Stream and $0.06640001 Naive;
+  complete accounting covered 0/5 and 3/5 outputs, respectively, so there is no
+  paired cost delta. The run took 191.662 s. The artifact is `reportable: false`;
   no unseen query was run.
 - All accepted evidence lead-at-commit measurements were zero. Raw candidates
   could exist earlier, but remained provisional until commit validation; Stream's
-  fallback, compatible post-commit overlap, and speculative-reuse rates were 40%,
-  40%, and 20%. The one ultimately reused candidate had 2,226.851 ms of raw
-  headroom. Final answer generation never began before Send.
+  fallback, compatible post-commit overlap, and speculative-reuse rates were 60%,
+  20%, and 20%. The one ultimately reused candidate had 1,944.726 ms of
+  provisional candidate headroom. Final answer generation never began before
+  Send.
 - The retained development result and its limitations are recorded in
   [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
 

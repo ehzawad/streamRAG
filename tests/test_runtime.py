@@ -135,6 +135,7 @@ async def test_answer_ready_precedes_persistence_and_final_accounting() -> None:
                 "tool_traces": [
                     {
                         "accounting_complete": True,
+                        "embedding_tokens": None,
                         "sources": [
                             {
                                 "chunk_id": "tool-source::c0001",
@@ -181,6 +182,7 @@ async def test_answer_ready_precedes_persistence_and_final_accounting() -> None:
     assert ready["controller"] == {"calls": 0}
     assert ready["reuse"]["mode"] == "commit_endpoint"
     assert ready["estimated_cost_usd"]["accounting_complete"] is False
+    assert ready["estimated_cost_usd"]["query_embedding"] == 0
     assert ready["estimated_cost_usd"]["unpriced_post_answer_persistence"] is True
     await asyncio.sleep(0.03)
     assert not task.done(), "post-answer work must not consume the answer deadline"

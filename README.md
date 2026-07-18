@@ -99,10 +99,10 @@ embeds only missing or changed chunks, removes stale points, and advances a dura
 index version. That version is part of bounded query/result cache keys. Local
 Qdrant stores generated state under `data/qdrant/`; it is not committed.
 
-A clean real-API build on the acceptance machine indexed 1,000/1,000 points with
-`text-embedding-3-large`: 366,142 embedding tokens, 40.94 s, and $0.04759846 at
-the recorded embedding price. The corpus pages themselves are complete after
-HTML/script/style cleaning; no selected page is character- or token-truncated.
+A real-API build indexed 1,000/1,000 points with `text-embedding-3-large` using
+366,142 embedding tokens. Index wall time is treated as volatile operational
+evidence rather than a benchmark metric. The corpus pages themselves are complete
+after HTML/script/style cleaning; no selected page is character- or token-truncated.
 
 ## Verification and measured development evidence
 
@@ -141,30 +141,29 @@ inference bundle and approved service status.
 The retained real development comparison used exactly 5 checksum-bound development
 questions × 2 isolated paths, deterministic 70-WPM typing, and one measured pass.
 Both paths completed all five with 100% automatic expected-answer, evidence support,
-supporting-citation, and false-premise correctness. Stream won TTFT on 4/5 pairs;
-the median paired Stream-minus-Naive delta was -628.907 ms (-12.0846%) for TTFT
-and -702.294 ms for total time. The paired p95 TTFT delta was +275.880 ms because
-one tail case was slower. Negative latency deltas favor Stream.
+supporting-citation, and false-premise correctness. Stream won TTFT on all 5/5
+pairs; the median paired Stream-minus-Naive delta was -3,090.101 ms (-33.7579%)
+for TTFT and -1,251.090 ms for total time. The paired p95 TTFT delta was
+-1,178.695 ms. Negative latency deltas favor Stream.
 
 This small live run does not prove causality or a general speedup, and it showed no
 accuracy gain because both paths were already perfect on the automatic checks.
 Stream's fallback, compatible post-commit overlap, and speculative-reuse rates were
-40%, 40%, and 20%. Accepted evidence still had zero pre-Send lead on every case.
-Stream used 20 model API calls, 23 controller calls, and 12 retrievals versus
-Naive's 7, 5, and 5; neither path issued a dynamic function-tool call. Observed
-costs were lower bounds—at least $0.11416807 for Stream and $0.06137975 for
+60%, 20%, and 20%. Accepted evidence still had zero pre-Send lead on every case.
+Stream used 19 model API calls, 21 controller calls, and 12 retrievals versus
+Naive's 8, 5, and 5; neither path issued a dynamic function-tool call. Observed
+costs were lower bounds—at least $0.10848677 for Stream and $0.06640001 for
 Naive—because cancelled, failed, or timed-out calls did not all return provider
-usage. Complete accounting covered 0/5 Stream and 2/5 Naive outputs, so no paired
+usage. Complete accounting covered 0/5 Stream and 3/5 Naive outputs, so no paired
 cost delta is available. The artifact is `reportable: false`; the unseen test
 split remains sealed.
 
-The retained development run took 180.866 s. A clean-clone acceptance run at the
-published commit completed setup, verification, all tests/builds, two fresh real
-1,000-point indexes, service startup, and all 10 dev path runs plus scoring in
-about 4 minutes 46 seconds on the acceptance machine. The workflow remains
-designed to stay below 15–20 minutes on a normal connection and responsive OpenAI
-service; the 45 s per-case deadline, first-time package downloads, and provider
-variance are the main sources of variation.
+The retained development run took 191.662 s. Clean-clone wall time is kept
+separate from this source-bound benchmark evidence; superseded pre-fix timing is
+intentionally not reused. The workflow remains designed to stay below 15–20
+minutes on a normal connection and responsive OpenAI service; the 45 s per-case
+deadline, first-time package downloads, and provider variance are the main sources
+of variation.
 
 See [`docs/BENCHMARK_REPORT.md`](docs/BENCHMARK_REPORT.md) for the non-final
 development evidence and frozen-test protocol,

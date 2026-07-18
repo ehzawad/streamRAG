@@ -6,16 +6,16 @@ Configuration: `gpt-5.6-sol` at answer `medium`, trigger `low`, and summary `low
 
 | Path | Accuracy | Support+citation | Median TTFT | Median total | Model calls | Controllers | Retrievals | Dynamic function tools | Cost |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| naive | 100.0% | 100.0% | 5907 ms | 6290 ms | 7 | 5 | 5 | 0 | ≥$0.0614 |
-| stream | 100.0% | 100.0% | 4575 ms | 5084 ms | 20 | 23 | 12 | 0 | ≥$0.1142 |
+| naive | 100.0% | 100.0% | 6199 ms | 6846 ms | 8 | 5 | 5 | 0 | ≥$0.0664 |
+| stream | 100.0% | 100.0% | 4942 ms | 5662 ms | 19 | 21 | 12 | 0 | ≥$0.1085 |
 
 ## Paired outcome
 
-- Stream TTFT wins: 80.0%
-- Median Stream minus Naive TTFT: -629 ms
-- Median Stream minus Naive total: -702 ms
+- Stream TTFT wins: 100.0%
+- Median Stream minus Naive TTFT: -3090 ms
+- Median Stream minus Naive total: -1251 ms
 - Mean Stream minus Naive accuracy: 0.0 percentage points
-- Measured wall time: 180.9 s
+- Measured wall time: 191.7 s
 
 Dynamic function tools means model-issued `search_local_crag` calls after the
 shared primary retrieval. Controller and retrieval calls are reported separately.
@@ -26,6 +26,6 @@ return provider usage and are deliberately never estimated as zero.
 
 | Candidate class | Questions | Stream TTFT wins | Median paired TTFT delta | Accuracy delta |
 |---|---:|---:|---:|---:|
-| early_stabilization | 3 | 100.0% | -3104 ms | 0.0 pp |
-| late_stabilization | 1 | 0.0% | 464 ms | 0.0 pp |
-| revision_or_ambiguity | 1 | 100.0% | -479 ms | 0.0 pp |
+| early_stabilization | 3 | 100.0% | -3129 ms | 0.0 pp |
+| late_stabilization | 1 | 100.0% | -1159 ms | 0.0 pp |
+| revision_or_ambiguity | 1 | 100.0% | -3090 ms | 0.0 pp |

@@ -222,24 +222,24 @@ Primary output includes:
 The retained run used all five checksum-bound dev questions and no unseen test
 question. Both paths completed 5/5 with 100% automatic expected-answer, evidence-
 support, supporting-citation, and false-premise correctness. Stream won TTFT on
-4/5 pairs; median paired Stream-minus-Naive TTFT was -628.907 ms (-12.0846%),
-paired p95 TTFT delta was +275.880 ms because one tail pair was slower, and median
-total-time delta was -702.294 ms. The early slice won 3/3 at -3,104.281 ms median
-TTFT, the one late item lost at +464.497 ms, and the revision/ambiguity item won at
--478.590 ms. All accuracy deltas were zero: scheduling produced no accuracy gain
+5/5 pairs; median paired Stream-minus-Naive TTFT was -3,090.101 ms (-33.7579%),
+paired p95 TTFT delta was -1,178.695 ms, and median total-time delta was
+-1,251.090 ms. The early slice won 3/3 at -3,128.927 ms median TTFT, the one late
+item won at -1,159.071 ms, and the revision/ambiguity item won at -3,090.101 ms.
+All accuracy deltas were zero: scheduling produced no accuracy gain
 on these already-correct outputs.
 
-Naive medians were 5,906.720 ms TTFT and 6,290.444 ms total; Stream medians were
-4,575.290 ms and 5,083.832 ms. Stream used 20 model API calls, 23 controller
-calls, and 12 retrievals versus Naive's 7, 5, and 5. Neither path issued a dynamic
-function-tool call. Observed costs were at least $0.11416807 and $0.06137975,
+Naive medians were 6,199.342 ms TTFT and 6,846.266 ms total; Stream medians were
+4,942.155 ms and 5,662.263 ms. Stream used 19 model API calls, 21 controller
+calls, and 12 retrievals versus Naive's 8, 5, and 5. Neither path issued a dynamic
+function-tool call. Observed costs were at least $0.10848677 and $0.06640001,
 respectively. They are lower bounds: complete accounting covered 0/5 Stream and
-2/5 Naive outputs, leaving zero complete cost pairs, so no paired cost delta is
+3/5 Naive outputs, leaving zero complete cost pairs, so no paired cost delta is
 available. All accepted retrieval lead-at-commit values were zero; 20% reused
-provisional work after commit revalidation, 40% completed compatible work after
-commit, and 40% fell back at commit. The one ultimately reused raw candidate had
-2,226.851 ms of provisional headroom. These facts prevent attributing every
-observed latency delta to safe pre-Send evidence.
+provisional work after commit revalidation, 20% completed compatible work after
+commit, and 60% fell back at commit. The one ultimately reused provisional
+candidate had 1,944.726 ms of candidate headroom. These facts prevent attributing
+every observed latency delta to safe pre-Send evidence.
 
 The manifest is `reportable: false` and `completed_non_reportable`. It records 10
 completed outputs, zero failures/deadline failures, two distinct services, and
@@ -259,7 +259,7 @@ determinate before Send. Late constraints, comparisons, negation, or revisions c
 erase the head start and add controller overhead. Therefore the correct target is:
 
 > preserve grounded correctness, improve latency on early-stabilizing inputs, and
-> expose the extra calls/cost and losses on late or revised inputs.
+> expose the extra calls/cost and possible losses on late or revised inputs.
 
 The project does not claim the paper's speech latency, accuracy, training, AudioCRAG,
 100,000-document, reranking, or model-call figures as its own.
@@ -267,8 +267,9 @@ The project does not claim the paper's speech latency, accuracy, training, Audio
 ## 12. Reproduction and honest claims
 
 Normal reproduction uses the committed compressed dataset; the 705 MiB upstream
-download is optional. A clean real index took 40.94 s and the retained real
-five-question development A/B run took 180.866 s. After approval, the bounded
+download is optional. The retained real five-question development A/B run took
+191.662 s. Clean-clone wall time is kept separate from source-bound benchmark
+evidence; superseded pre-fix timing is not reused. After approval, the bounded
 20-case final runner is designed to keep the full normal workflow around 15–20
 minutes on a normal connection and responsive provider.
 
