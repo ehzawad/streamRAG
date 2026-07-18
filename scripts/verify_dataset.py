@@ -7,8 +7,8 @@ import json
 import time
 from pathlib import Path
 
-from app.config import settings
-from app.data.crag import (
+from shared.config import settings
+from shared.data.crag import (
     capture_dataset_snapshot,
     chunk_documents,
     load_snapshot_documents,

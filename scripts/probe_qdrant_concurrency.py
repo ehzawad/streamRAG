@@ -10,9 +10,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import NoReturn
 
-from app.config import settings
-from app.data.index_state import IndexStateRepository
-from app.data.vector_store import QdrantVectorStore
+from shared.config import settings
+from shared.data.index_state import IndexStateRepository
+from shared.data.vector_store import QdrantVectorStore
 
 
 class _EmbeddingGuard:

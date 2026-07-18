@@ -7,9 +7,9 @@
 .playwright-cli
 **/__pycache__
 tmp
-frontend/node_modules
-frontend/dist
-bench/results
+comparison/frontend/node_modules
+comparison/frontend/dist
+comparison/benchmark/results
 data/raw
 data/qdrant*
 data/*.sqlite3*

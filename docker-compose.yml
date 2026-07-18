@@ -1,6 +1,8 @@
 services:
-  api:
-    build: .
+  naive:
+    build:
+      context: .
+      dockerfile: naive/Dockerfile
     env_file:
       - path: .env
         required: false
@@ -11,19 +13,40 @@ services:
       RUNTIME_DB: /app/var/runtime.sqlite3
       METRICS_LOG: /app/var/requests.jsonl
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8001:8001"
     volumes:
-      - runtime-data:/app/var
+      - naive-runtime:/app/var
 
-  web:
+  stream:
     build:
-      context: frontend
+      context: .
+      dockerfile: stream/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ALLOW_UNREVIEWED_DATASET: ${ALLOW_UNREVIEWED_DATASET:-0}
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      QDRANT_PATH: /app/var/qdrant
+      RUNTIME_DB: /app/var/runtime.sqlite3
+      METRICS_LOG: /app/var/requests.jsonl
+    ports:
+      - "127.0.0.1:8002:8002"
+    volumes:
+      - stream-runtime:/app/var
+
+  comparison:
+    build:
+      context: comparison/frontend
       args:
-        VITE_API_URL: http://127.0.0.1:8000
+        VITE_NAIVE_API_URL: http://127.0.0.1:8001
+        VITE_STREAM_API_URL: http://127.0.0.1:8002
     depends_on:
-      - api
+      - naive
+      - stream
     ports:
       - "127.0.0.1:5173:80"
 
 volumes:
-  runtime-data:
+  naive-runtime:
+  stream-runtime:

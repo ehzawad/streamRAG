@@ -23,6 +23,6 @@ documents under this project's terms.
 
 Python and frontend dependencies are third-party works installed from their
 respective package registries and pinned by `uv.lock` and
-`frontend/package-lock.json`. Each dependency remains subject to the license in
+`comparison/frontend/package-lock.json`. Each dependency remains subject to the license in
 its own distribution. No third-party dependency source is vendored in this
 repository.
