@@ -12,13 +12,6 @@ therefore for non-commercial assessment/research use under that license. Source
 URLs and document identifiers are preserved for attribution and audit. This notice
 does not change the upstream license or grant commercial rights.
 
-## Research papers
-
-Copies of the Applied AI Engineer assessment and Stream RAG paper under
-`docs/references` are included as task/research references. Copyright remains with
-their respective authors and publishers. Their inclusion does not relicense the
-documents under this project's terms.
-
 ## Software dependencies
 
 Python and frontend dependencies are third-party works installed from their
