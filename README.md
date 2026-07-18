@@ -26,20 +26,28 @@ not a final benchmark: the sample is small, no answers were human-adjudicated,
 and the sealed test set remains untouched. See
 [`docs/BENCHMARK_REPORT.md`](docs/BENCHMARK_REPORT.md).
 
-## Three runnable UIs
+## One homepage, three experiences
 
-| Experience | URL | Dependency |
+| Experience | URL | Backend dependency |
 | --- | --- | --- |
-| Naive only | <http://127.0.0.1:8001> | `naive/` + `shared/` |
-| Stream only | <http://127.0.0.1:8002> | `stream/` + `shared/` |
-| Naive, Stream, or side-by-side | <http://127.0.0.1:5173> | `frontend/` + selected APIs |
+| Homepage | <http://127.0.0.1:5173/> | route launcher |
+| Naive only | <http://127.0.0.1:5173/naive> | `naive/` + `shared/` |
+| Stream only | <http://127.0.0.1:5173/stream> | `stream/` + `shared/` |
+| Side-by-side | <http://127.0.0.1:5173/compare> | both isolated APIs |
 
 `naive/` and `stream/` are independently runnable products. Neither imports or
-calls the other. `frontend/` is only the GUI; it calls the APIs over HTTP/SSE.
+calls the other. Their direct developer UIs remain available on ports 8001 and
+8002. `frontend/` is only the GUI; its same-origin proxy keeps those ports out of
+the public browser contract.
 `comparison/` is a separate headless CLI for provisioning, replay, scoring, and
 reports. Removing either consumer does not affect the APIs or the other consumer.
 `shared/` holds only the corpus/index, answer, memory, API lifecycle, single-path
 UI shell, and metric contracts that must be common for a fair test.
+
+All three routed experiences are multi-turn chats. A follow-up keeps the prior
+turns in that path's isolated session; **New chat** clears the transcript and
+starts a new session. Compare preserves separate Naive and Stream histories so
+neither implementation can borrow the other's state.
 
 ## Run the complete comparison
 
@@ -51,8 +59,8 @@ make verify-data
 make dev-stack
 ```
 
-In another terminal, run `make sync-app` once, then open
-<http://127.0.0.1:5173>. Each API builds and owns its own Qdrant, SQLite,
+In another terminal, run `make sync-app` once, then open the homepage at
+<http://127.0.0.1:5173/>. Each API builds and owns its own Qdrant, SQLite,
 metrics, session, and cache state under `var/`. Live indexing and answers use
 OpenAI and local vector search; no live-path dependency is mocked. The faster
 stopped-seed cloning workflow belongs only to the headless benchmark.
@@ -101,10 +109,16 @@ make docker-config
 
 For the tested local Docker stack, set `OPENAI_API_KEY` and
 `ALLOW_UNREVIEWED_DATASET=1` in `.env`, then run `make docker-up`. From another
-terminal run `make docker-sync` once and open <http://127.0.0.1:5173>. Stop and
+terminal run `make docker-sync` once and open <http://127.0.0.1:5173/>. Stop and
 remove the containers with `make docker-down`. The override permits only local
 development on the candidate dataset; it does not approve or unseal evaluation
 data.
+
+The Docker frontend is the only browser-facing origin. It serves `/`, `/naive`,
+`/stream`, and `/compare`, and proxies `/api/naive/*` and `/api/stream/*` to the
+isolated containers. A network deployment still needs TLS, authentication, rate
+and spend limits, and persistent volumes; do not publish this no-auth assessment
+unchanged.
 
 The committed corpus avoids the 705 MiB upstream download. The APIs are async;
 synchronous local-Qdrant work runs off the event loop. This is a bounded local

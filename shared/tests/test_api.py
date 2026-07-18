@@ -74,7 +74,17 @@ def test_health_and_dataset_gate(tmp_path: Path) -> None:
         assert '"supportsSnapshots":true' in page.text
         assert 'snapshotQueue = { active: false, controller: null, latest: "" }' in page.text
         assert "if (queue !== snapshotQueue || queue.active || sent) return" in page.text
-        assert "sessionId ||= id()" in page.text
+        assert "if (newConversation || !sessionId) sessionId = id();" in page.text
+        assert (
+            'function prepareNextTurn(nextStatus = "Ask a follow-up; this chat keeps context.")'
+            in page.text
+        )
+        assert "let lifecycleEpoch = 0;" in page.text
+        assert "if (epoch !== lifecycleEpoch || controller.signal.aborted) return;" in page.text
+        assert 'if (epoch !== lifecycleEpoch || error.name === "AbortError") return;' in page.text
+        assert "turnEvents?.close();\n  turnEvents = null;" in page.text
+        assert "runEvents?.close();\n  runEvents = null;" in page.text
+        assert 'byId("reset").addEventListener("click", () => resetState(true, true))' in page.text
         assert client.get("/v1/info").json()["implementation"] == "stream"
         assert client.get("/v1/metrics/schema").json() == {
             "implementation": "stream",

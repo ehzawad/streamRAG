@@ -5,12 +5,14 @@ not be exposed to a LAN or the public internet.
 
 | Surface | Local address |
 |---|---|
-| Naive UI/API | `127.0.0.1:8001` |
-| Stream UI/API | `127.0.0.1:8002` |
-| Optional frontend | `127.0.0.1:5173` |
+| Homepage and routed UI | `127.0.0.1:5173/{,naive,stream,compare}` |
+| Direct Naive developer UI/API | `127.0.0.1:8001` |
+| Direct Stream developer UI/API | `127.0.0.1:8002` |
 
 Container services may listen on `0.0.0.0` internally, but host ports remain
-loopback-only. CORS limits browser origins; it is not authentication.
+loopback-only. The frontend proxies same-origin `/api/naive/*` and
+`/api/stream/*`; backend port numbers are not a public-browser contract. CORS
+limits browser origins; it is not authentication.
 
 ## What is protected
 

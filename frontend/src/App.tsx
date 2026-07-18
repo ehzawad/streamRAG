@@ -19,6 +19,7 @@ import {
   startSelectedRuns,
   type AnswerPath,
 } from "./runLifecycle";
+import { EXPERIENCE_PATHS } from "./routes.ts";
 
 type PanelState = {
   answer: string;
@@ -46,6 +47,20 @@ type SnapshotJob = {
   revision: number;
   epoch: number;
   signal: AbortSignal;
+};
+
+type TranscriptAnswer = {
+  answer: string;
+  sources: Source[];
+  status: string;
+  firstToken: number | null;
+  total: number | null;
+};
+
+type TranscriptTurn = {
+  id: string;
+  question: string;
+  answers: Partial<Record<AnswerPath, TranscriptAnswer>>;
 };
 
 const emptyPanel = (status: string): PanelState => ({
@@ -80,6 +95,14 @@ const freshIds = (): Record<AnswerPath, string> => ({
 const freshAbortControllers = (): Record<AnswerPath, AbortController> => ({
   naive: new AbortController(),
   stream: new AbortController(),
+});
+
+const pendingTranscriptAnswer = (): TranscriptAnswer => ({
+  answer: "",
+  sources: [],
+  status: "Waiting…",
+  firstToken: null,
+  total: null,
 });
 
 function isProbeReady(topology: ServiceTopology | null, path: AnswerPath): boolean {
@@ -120,14 +143,14 @@ function topologyLabel(topology: ServiceTopology | null, mode: PathName): string
     : `${active.implementation} API · ${active.model} · ${active.indexed_chunks} chunks`;
 }
 
-export function App() {
-  const [mode, setMode] = useState<PathName>("compare");
+export function App({ mode }: { mode: PathName }) {
   const [query, setQuery] = useState("");
   const [topology, setTopology] = useState<ServiceTopology | null>(null);
   const [transportNotice, setTransportNotice] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [trace, setTrace] = useState<string[]>([]);
-  const [panels, setPanels] = useState<Record<AnswerPath, PanelState>>(() => initialPanels("compare"));
+  const [panels, setPanels] = useState<Record<AnswerPath, PanelState>>(() => initialPanels(mode));
+  const [conversation, setConversation] = useState<TranscriptTurn[]>([]);
 
   const sessionIds = useRef(freshIds());
   const turnIds = useRef(freshIds());
@@ -160,12 +183,24 @@ export function App() {
     snapshotDraining.current = false;
     turnEvents.current = null;
     runEvents.current = { naive: null, stream: null };
-    let mounted = true;
-    void getServiceTopology().then((value) => {
-      if (mounted) setTopology(value);
-    });
+    const controller = new AbortController();
+    let retry: number | undefined;
+    setTopology(null);
+
+    async function refreshTopology() {
+      const selected = selectedImplementations(mode);
+      const value = await getServiceTopology(selected, controller.signal);
+      if (controller.signal.aborted) return;
+      setTopology(value);
+      if (!isModeReady(value, mode)) {
+        retry = window.setTimeout(() => void refreshTopology(), 2_000);
+      }
+    }
+
+    void refreshTopology();
     return () => {
-      mounted = false;
+      controller.abort();
+      window.clearTimeout(retry);
       window.clearInterval(timer.current);
       snapshotAbort.current.abort();
       Object.values(runAbort.current).forEach((controller) => controller.abort());
@@ -178,7 +213,7 @@ export function App() {
         }
       });
     };
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     if (mode === "naive" || running) {
@@ -314,9 +349,55 @@ export function App() {
     });
   }
 
-  function handleRunEvent(path: AnswerPath, event: BackendEvent) {
+  function updateTranscript(
+    transcriptTurnId: string,
+    path: AnswerPath,
+    update: (answer: TranscriptAnswer) => TranscriptAnswer,
+  ) {
+    setConversation((current) => current.map((turn) => {
+      if (turn.id !== transcriptTurnId) return turn;
+      const answer = turn.answers[path] ?? pendingTranscriptAnswer();
+      return {
+        ...turn,
+        answers: { ...turn.answers, [path]: update(answer) },
+      };
+    }));
+  }
+
+  function handleRunEvent(
+    path: AnswerPath,
+    event: BackendEvent,
+    transcriptTurnId: string,
+  ) {
     addTrace(event);
     const wasUserVisibleTerminal = userVisibleTerminalPaths.current.has(path);
+    if (event.type === "answer.started") {
+      updateTranscript(transcriptTurnId, path, (answer) => ({
+        ...answer,
+        sources: event.sources || answer.sources,
+        status: "Generating…",
+      }));
+    } else if (event.type === "answer.delta") {
+      updateTranscript(transcriptTurnId, path, (answer) => ({
+        ...answer,
+        answer: answer.answer + (event.text || ""),
+        status: "Generating…",
+      }));
+    } else if (event.type === "answer.ready" || event.type === "answer.completed") {
+      updateTranscript(transcriptTurnId, path, (answer) => ({
+        ...answer,
+        answer: event.answer || answer.answer,
+        sources: event.sources || answer.sources,
+        status: "Complete",
+        firstToken: event.timing?.submit_to_first_token_ms ?? answer.firstToken,
+        total: event.timing?.total_response_ms ?? answer.total,
+      }));
+    } else if (event.type === "answer.error" || event.type === "run.error") {
+      updateTranscript(transcriptTurnId, path, (answer) => ({
+        ...answer,
+        status: event.message || `${path} path failed`,
+      }));
+    }
     setPanels((current) => {
       const panel = current[path];
       if (event.type === "answer.started") {
@@ -467,7 +548,12 @@ export function App() {
     }
   }
 
-  function attachRunEvents(path: AnswerPath, runId: string, eventsUrl: string) {
+  function attachRunEvents(
+    path: AnswerPath,
+    runId: string,
+    eventsUrl: string,
+    transcriptTurnId: string,
+  ) {
     displayedRunIds.current[path] = runId;
     runEvents.current[path]?.close();
     let transportTerminal = false;
@@ -475,7 +561,9 @@ export function App() {
       path,
       eventsUrl,
       (event) => {
-        if (displayedRunIds.current[path] === runId) handleRunEvent(path, event);
+        if (displayedRunIds.current[path] === runId) {
+          handleRunEvent(path, event, transcriptTurnId);
+        }
         if (isRunTransportTerminal(event)) {
           transportTerminal = true;
           source.close();
@@ -520,6 +608,19 @@ export function App() {
     turnEvents.current = null;
 
     const selected = selectedImplementations(submittedMode);
+    const transcriptTurnId = crypto.randomUUID();
+    setConversation((current) => [
+      ...current,
+      {
+        id: transcriptTurnId,
+        question: text,
+        answers: Object.fromEntries(
+          selected.map((path) => [path, pendingTranscriptAnswer()]),
+        ) as Partial<Record<AnswerPath, TranscriptAnswer>>,
+      },
+    ]);
+    setQuery("");
+    pendingQuery.current = "";
     const queryTime = new Date().toISOString();
     const requests = Object.fromEntries(selected.map((path) => {
       runAbort.current[path].abort();
@@ -552,7 +653,7 @@ export function App() {
         void cancelTurn(path, request.turnId).catch(() => undefined);
         throw new DOMException("superseded request", "AbortError");
       }
-      attachRunEvents(path, accepted.run_id, accepted.events_url);
+      attachRunEvents(path, accepted.run_id, accepted.events_url, transcriptTurnId);
       return accepted;
     });
 
@@ -562,12 +663,16 @@ export function App() {
         const message = result.reason instanceof Error
           ? result.reason.message
           : String(result.reason);
-        handleRunEvent(result.path, { type: "run.error", path: result.path, message });
+        handleRunEvent(
+          result.path,
+          { type: "run.error", path: result.path, message },
+          transcriptTurnId,
+        );
       }
     });
   }
 
-  function resetTurn(nextMode: PathName, newConversation: boolean) {
+  function newChat() {
     submissionEpoch.current += 1;
     activeMode.current = null;
     visibleRunFinalized.current = true;
@@ -593,7 +698,7 @@ export function App() {
     });
 
     turnIds.current = freshIds();
-    if (newConversation) sessionIds.current = freshIds();
+    sessionIds.current = freshIds();
     revisions.current = { naive: 0, stream: 0 };
     userVisibleTerminalPaths.current.clear();
     pendingQuery.current = "";
@@ -603,21 +708,27 @@ export function App() {
     setTransportNotice(null);
     setQuery("");
     setTrace([]);
-    setPanels(initialPanels(nextMode));
-  }
-
-  function newTurn() {
-    resetTurn(mode, false);
-  }
-
-  function changeMode(path: PathName) {
-    if (path === mode || running) return;
-    resetTurn(path, true);
-    setMode(path);
+    setPanels(initialPanels(mode));
+    setConversation([]);
   }
 
   return (
     <main>
+      <nav className="app-nav" aria-label="Application navigation">
+        <a href="/">Home</a>
+        {(Object.entries(EXPERIENCE_PATHS) as [PathName, string][]).map(([path, href]) => (
+          <a
+            key={path}
+            href={href}
+            aria-current={mode === path ? "page" : undefined}
+            onClick={(event) => {
+              if (mode === path) event.preventDefault();
+            }}
+          >
+            {path === "naive" ? "Naive" : path === "stream" ? "Stream" : "Compare"}
+          </a>
+        ))}
+      </nav>
       <header>
         <div>
           <p className="eyebrow">Applied AI Engineer assessment</p>
@@ -632,6 +743,8 @@ export function App() {
         <span className={`health ${ready ? "ok" : "warn"}`}>{health}</span>
       </header>
 
+      <ConversationTranscript mode={mode} turns={conversation} />
+
       <section className="composer">
         <textarea
           aria-label="Question"
@@ -642,22 +755,23 @@ export function App() {
         />
         <div className="actions">
           <div className="modes" aria-label="Retrieval path">
-            {(["naive", "stream", "compare"] as PathName[]).map((path) => (
-              <button
-                type="button"
+            {(Object.entries(EXPERIENCE_PATHS) as [PathName, string][]).map(([path, href]) => (
+              <a
                 key={path}
+                href={href}
                 className={mode === path ? "active" : ""}
-                aria-pressed={mode === path}
-                onClick={() => changeMode(path)}
-                disabled={running}
+                aria-current={mode === path ? "page" : undefined}
+                onClick={(event) => {
+                  if (mode === path) event.preventDefault();
+                }}
               >
                 {path === "naive" ? "Path A" : path === "stream" ? "Path B" : "Compare"}
-              </button>
+              </a>
             ))}
           </div>
           <div className="submit-row">
-            <button type="button" className="secondary" onClick={newTurn}>
-              {running ? "Cancel" : "New turn"}
+            <button type="button" className="secondary" onClick={newChat}>
+              New chat
             </button>
             <button
               type="button"
@@ -673,9 +787,13 @@ export function App() {
 
       {mode === "compare" && <CompareSummary naive={panels.naive} stream={panels.stream} />}
 
-      <section className="results">
-        <ResultPanel path="naive" title="Path A · Naive RAG" tone="amber" panel={panels.naive} />
-        <ResultPanel path="stream" title="Path B · StreamRAG" tone="green" panel={panels.stream} />
+      <section className={`results ${mode === "compare" ? "" : "single"}`}>
+        {mode !== "stream" && (
+          <ResultPanel path="naive" title="Path A · Naive RAG" tone="amber" panel={panels.naive} />
+        )}
+        {mode !== "naive" && (
+          <ResultPanel path="stream" title="Path B · StreamRAG" tone="green" panel={panels.stream} />
+        )}
       </section>
 
       <details>
@@ -683,6 +801,66 @@ export function App() {
         <pre>{trace.length ? trace.join("\n") : "No events yet."}</pre>
       </details>
     </main>
+  );
+}
+
+function ConversationTranscript({
+  mode,
+  turns,
+}: {
+  mode: PathName;
+  turns: TranscriptTurn[];
+}) {
+  if (!turns.length) return null;
+  const paths = selectedImplementations(mode);
+  return (
+    <section className="conversation" aria-label="Conversation" aria-live="polite">
+      <div className="conversation-head">
+        <h2>Conversation</h2>
+        <span>Follow-ups keep this chat&apos;s context.</span>
+      </div>
+      {turns.map((turn) => (
+        <article className="chat-turn" key={turn.id}>
+          <div className="user-message">
+            <small>You</small>
+            <p>{turn.question}</p>
+          </div>
+          <div className={`assistant-messages ${paths.length === 1 ? "single" : ""}`}>
+            {paths.map((path) => {
+              const answer = turn.answers[path] ?? pendingTranscriptAnswer();
+              const visibleSources = Array.from(
+                new Map(
+                  answer.sources.map((source) => [source.url || source.chunk_id, source]),
+                ).values(),
+              );
+              return (
+                <div className={`assistant-message ${path}`} key={path}>
+                  <div>
+                    <small>{path === "naive" ? "Naive RAG" : "Typed StreamRAG"}</small>
+                    <span>{answer.status}</span>
+                  </div>
+                  <p className={answer.answer ? "" : "pending-answer"}>
+                    {answer.answer || "Waiting for the grounded answer…"}
+                  </p>
+                  {(answer.firstToken !== null || answer.total !== null) && (
+                    <p className="chat-timing">
+                      TTFT {answer.firstToken?.toFixed(0) ?? "—"} ms · total {answer.total?.toFixed(0) ?? "—"} ms
+                    </p>
+                  )}
+                  <div className="sources">
+                    {visibleSources.map((source) => (
+                      <a key={source.chunk_id} href={source.url} target="_blank" rel="noreferrer">
+                        {source.title}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </article>
+      ))}
+    </section>
   );
 }
 

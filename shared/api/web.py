@@ -32,6 +32,14 @@ _PAGE = """<!doctype html>
     .buttons { display: flex; gap: 8px; }
     .answer { min-height: 110px; white-space: pre-wrap; font-size: 18px; line-height: 1.65; }
     .empty { color: #708078; }
+    .conversation { display: grid; gap: 18px; }
+    .turn { display: grid; gap: 10px; }
+    .message { padding: 13px 15px; border-radius: 14px; line-height: 1.6; white-space: pre-wrap; }
+    .message.user { justify-self: end; width: min(720px, 88%); color: #07110b; background: #8fe0ad; border-bottom-right-radius: 4px; }
+    .message.assistant { border: 1px solid #34433b; background: #0c120f; border-top-left-radius: 4px; }
+    .message-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; color: #91a097; font-size: 11px; }
+    .message-sources { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .message-sources a { color: #9ce3b6; font-size: 12px; text-decoration: none; border-bottom: 1px solid #467357; }
     .metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(130px,1fr)); gap: 10px; margin-bottom: 22px; }
     .metric { padding: 12px; border-radius: 10px; background: #0c120f; }
     .metric small { display: block; color: #7f9187; margin-bottom: 5px; }
@@ -53,11 +61,16 @@ _PAGE = """<!doctype html>
     <span id="health" class="health">Connecting…</span>
   </header>
   <section>
+    <div id="conversation" class="conversation">
+      <div id="conversation-empty" class="empty">No messages yet.</div>
+    </div>
+  </section>
+  <section>
     <textarea id="question" aria-label="Question" placeholder="Type a factual question…"></textarea>
     <div class="actions">
       <span id="status" class="status">Ready for a question.</span>
       <div class="buttons">
-        <button id="reset" type="button">New turn</button>
+        <button id="reset" type="button">New chat</button>
         <button id="send" class="primary" type="button" disabled>Send</button>
       </div>
     </div>
@@ -88,10 +101,26 @@ let runEvents;
 let sent;
 let lastSnapshot;
 let snapshotQueue;
+let activeTranscript;
+let editingAfterRun;
+let lifecycleEpoch = 0;
+let commitController;
 
 function id() { return crypto.randomUUID(); }
 function setStatus(text) { byId("status").textContent = text; }
-function resetState(cancel = true) {
+function clearDiagnostics() {
+  byId("answer").textContent = "No answer yet.";
+  byId("answer").classList.add("empty");
+  byId("sources").replaceChildren();
+  ["ttft", "total", "cost", "reuse"].forEach((name) => {
+    byId(name).textContent = "—";
+  });
+}
+
+function resetState(cancel = true, newConversation = false) {
+  lifecycleEpoch += 1;
+  commitController?.abort();
+  commitController = null;
   if (cancel && turnId) {
     fetch(`/v1/turns/${encodeURIComponent(turnId)}`, {
       method: "DELETE",
@@ -102,8 +131,10 @@ function resetState(cancel = true) {
   snapshotQueue?.controller?.abort();
   snapshotQueue = { active: false, controller: null, latest: "" };
   turnEvents?.close();
+  turnEvents = null;
   runEvents?.close();
-  sessionId ||= id();
+  runEvents = null;
+  if (newConversation || !sessionId) sessionId = id();
   turnId = id();
   revision = 0;
   sent = false;
@@ -111,13 +142,69 @@ function resetState(cancel = true) {
   question.disabled = false;
   question.value = "";
   sendButton.disabled = true;
-  byId("answer").textContent = "No answer yet.";
-  byId("answer").classList.add("empty");
-  byId("sources").replaceChildren();
-  ["ttft", "total", "cost", "reuse"].forEach((name) => {
-    byId(name).textContent = "—";
-  });
+  activeTranscript = null;
+  editingAfterRun = false;
+  clearDiagnostics();
+  if (newConversation) {
+    const empty = document.createElement("div");
+    empty.id = "conversation-empty";
+    empty.className = "empty";
+    empty.textContent = "No messages yet.";
+    byId("conversation").replaceChildren(empty);
+  }
   setStatus(config.supportsSnapshots ? "Type to prepare evidence." : "Ready for a question.");
+}
+
+function prepareNextTurn(nextStatus = "Ask a follow-up; this chat keeps context.") {
+  lifecycleEpoch += 1;
+  commitController?.abort();
+  commitController = null;
+  clearTimeout(snapshotTimer);
+  snapshotQueue?.controller?.abort();
+  snapshotQueue = { active: false, controller: null, latest: "" };
+  turnEvents?.close();
+  turnEvents = null;
+  runEvents?.close();
+  runEvents = null;
+  turnId = id();
+  revision = 0;
+  sent = false;
+  lastSnapshot = "";
+  activeTranscript = null;
+  editingAfterRun = true;
+  question.disabled = false;
+  question.value = "";
+  sendButton.disabled = true;
+  setStatus(nextStatus);
+}
+
+function appendTranscriptTurn(text) {
+  byId("conversation-empty")?.remove();
+  const turn = document.createElement("article");
+  turn.className = "turn";
+
+  const user = document.createElement("div");
+  user.className = "message user";
+  user.textContent = text;
+
+  const assistant = document.createElement("div");
+  assistant.className = "message assistant";
+  const head = document.createElement("div");
+  head.className = "message-head";
+  const role = document.createElement("strong");
+  role.textContent = config.implementation === "stream" ? "Typed StreamRAG" : "Naive RAG";
+  const state = document.createElement("span");
+  state.textContent = "Waiting…";
+  head.append(role, state);
+  const answer = document.createElement("div");
+  answer.className = "empty";
+  answer.textContent = "Waiting for the grounded answer…";
+  const sources = document.createElement("div");
+  sources.className = "message-sources";
+  assistant.append(head, answer, sources);
+  turn.append(user, assistant);
+  byId("conversation").append(turn);
+  return { answer, sources, state };
 }
 
 async function post(path, body, signal) {
@@ -163,7 +250,12 @@ async function drainSnapshotQueue(queue) {
     }, controller.signal);
     if (queue !== snapshotQueue || sent) return;
     lastSnapshot = text;
-    if (!turnEvents) turnEvents = subscribe(accepted.events_url, handleTypedEvent);
+    if (!turnEvents) {
+      const epoch = lifecycleEpoch;
+      turnEvents = subscribe(accepted.events_url, (event) => {
+        if (epoch === lifecycleEpoch) handleTypedEvent(event);
+      });
+    }
   } catch (error) {
     if (queue === snapshotQueue && !sent && error.name !== "AbortError") {
       setStatus(error.message);
@@ -198,8 +290,7 @@ function handleTypedEvent(event) {
   }
 }
 
-function renderSources(sources = []) {
-  const container = byId("sources");
+function renderSourcesInto(container, sources = []) {
   container.replaceChildren();
   const unique = new Map(sources.map((source) => [source.url || source.chunk_id, source]));
   unique.forEach((source) => {
@@ -212,16 +303,35 @@ function renderSources(sources = []) {
   });
 }
 
+function renderSources(sources = []) {
+  renderSourcesInto(byId("sources"), sources);
+  if (activeTranscript) renderSourcesInto(activeTranscript.sources, sources);
+}
+
 function handleRunEvent(event) {
   if (!sent) return;
-  if (event.type === "answer.started") setStatus("Generating grounded answer…");
+  if (event.type === "answer.started") {
+    setStatus("Generating grounded answer…");
+    if (activeTranscript) activeTranscript.state.textContent = "Generating…";
+  }
   if (event.type === "answer.delta") {
     byId("answer").classList.remove("empty");
     byId("answer").textContent += event.text || "";
+    if (activeTranscript) {
+      activeTranscript.answer.classList.remove("empty");
+      activeTranscript.answer.textContent = activeTranscript.answer.textContent === "Waiting for the grounded answer…"
+        ? event.text || ""
+        : activeTranscript.answer.textContent + (event.text || "");
+    }
   }
   if (event.type === "answer.ready" || event.type === "answer.completed") {
     byId("answer").classList.remove("empty");
     byId("answer").textContent = event.answer || byId("answer").textContent;
+    if (activeTranscript) {
+      activeTranscript.answer.classList.remove("empty");
+      activeTranscript.answer.textContent = event.answer || activeTranscript.answer.textContent;
+      activeTranscript.state.textContent = event.type === "answer.ready" ? "Answer ready" : "Complete";
+    }
     renderSources(event.sources);
     setStatus(event.type === "answer.ready" ? "Answer ready; finalizing metrics…" : "Complete");
     const timing = event.timing || {};
@@ -236,12 +346,20 @@ function handleRunEvent(event) {
   }
   if (event.type === "answer.error" || event.type === "run.error") {
     setStatus(event.message || "Run failed");
+    if (activeTranscript) activeTranscript.state.textContent = event.message || "Run failed";
     question.disabled = false;
   }
-  if (event.type === "run.completed" || event.type === "run.error") runEvents?.close();
+  if (event.type === "run.completed") prepareNextTurn();
+  if (event.type === "run.error") {
+    prepareNextTurn(`${event.message || "Run failed"} You can retry or ask another question.`);
+  }
 }
 
 question.addEventListener("input", () => {
+  if (editingAfterRun) {
+    editingAfterRun = false;
+    clearDiagnostics();
+  }
   sendButton.disabled = !question.value.trim() || sent;
   if (!config.supportsSnapshots || sent) return;
   snapshotQueue.latest = "";
@@ -257,11 +375,16 @@ sendButton.addEventListener("click", async () => {
   snapshotQueue.latest = "";
   snapshotQueue.controller?.abort();
   turnEvents?.close();
+  turnEvents = null;
   question.disabled = true;
   sendButton.disabled = true;
   byId("answer").textContent = "";
   byId("answer").classList.remove("empty");
+  activeTranscript = appendTranscriptTurn(text);
   setStatus("Submitting committed text…");
+  const epoch = lifecycleEpoch;
+  const controller = new AbortController();
+  commitController = controller;
   try {
     revision += 1;
     const accepted = await post(`/v1/turns/${turnId}/commit`, {
@@ -269,18 +392,25 @@ sendButton.addEventListener("click", async () => {
       revision,
       text,
       query_time: new Date().toISOString(),
-    });
+    }, controller.signal);
+    if (epoch !== lifecycleEpoch || controller.signal.aborted) return;
     if (accepted.path !== config.implementation) throw new Error("Service role mismatch");
-    runEvents = subscribe(accepted.events_url, handleRunEvent);
+    runEvents = subscribe(accepted.events_url, (event) => {
+      if (epoch === lifecycleEpoch) handleRunEvent(event);
+    });
   } catch (error) {
+    if (epoch !== lifecycleEpoch || error.name === "AbortError") return;
     sent = false;
     question.disabled = false;
     sendButton.disabled = false;
+    if (activeTranscript) activeTranscript.state.textContent = error.message;
     setStatus(error.message);
+  } finally {
+    if (commitController === controller) commitController = null;
   }
 });
 
-byId("reset").addEventListener("click", () => resetState(true));
+byId("reset").addEventListener("click", () => resetState(true, true));
 fetch("/v1/health").then((response) => response.json()).then((health) => {
   const node = byId("health");
   node.textContent = health.index_ready
