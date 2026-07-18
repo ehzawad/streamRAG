@@ -1,72 +1,62 @@
 # Real-user verification
 
-**Dataset scope:** development questions only while status is
-`candidate_pending_human_review`. No unseen test row may be used for browser
-acceptance or smoke verification.
+**Scope:** development questions only while the dataset is
+`candidate_pending_human_review`. The unseen test split was not used.
 
-## Required current-source acceptance
+## UI acceptance
 
-Verification is complete only when all three independently deployed surfaces pass:
-
-| Surface | URL | Required behavior |
+| Surface | URL | Expected behavior |
 |---|---|---|
-| Naive full-stack app | `http://127.0.0.1:8001` | usable question flow; no snapshot route/request; retrieval starts after Send |
-| Stream full-stack app | `http://127.0.0.1:8002` | changed-only snapshots; provisional readiness before Send; no answer before Send |
-| External comparison app | `http://127.0.0.1:5173` | two healthy roles; Stream-only snapshots; equal final commits; two independent answer streams |
+| Naive | `http://127.0.0.1:8001` | no pre-Send retrieval; answer and citations after Send |
+| Stream | `http://127.0.0.1:8002` | evidence may prepare while typing; no answer before Send |
+| Frontend | `http://127.0.0.1:5173` | Naive, Stream, or the same commit to two isolated services |
 
-The services must use different Qdrant directories, SQLite databases, metrics
-logs, instance IDs, sessions, and cache scopes. The comparison client must reach
-ports 8001 and 8002 directly; no backend may dispatch the other implementation.
+Live acceptance requires a real `OPENAI_API_KEY`, real Responses calls,
+`text-embedding-3-large`, and local Qdrant. Unit-test stubs do not support live
+latency, correctness, cost, or reproducibility claims.
 
-Live acceptance uses a real `OPENAI_API_KEY`, real Responses calls, real
-`text-embedding-3-large` embeddings, and real embedded-Qdrant search. Unit-test
-stubs are useful for deterministic edge cases but cannot satisfy any live-path,
-latency, correctness, cost, or reproducibility claim.
+The services must expose different implementation roles, instance IDs, Qdrant
+directories, SQLite databases, logs, sessions, and cache scopes. The GUI and CLI
+call ports 8001 and 8002 directly; neither backend may dispatch its peer.
 
-## Browser procedure
+## Browser checklist
 
-Use headed Playwright with the installed Google Chrome, then independently inspect
-the result with native Computer Use.
+Use headed Playwright with installed Google Chrome, then inspect the rendered
+result with native Computer Use.
 
-For Naive:
+1. On Naive, type a development question and confirm no snapshot request occurs.
+2. On Stream, wait 500 ms after the final snapshot is delivered (about 900 ms
+   after the last keystroke in the side-by-side frontend). Confirm evidence can
+   become ready but the answer remains hidden.
+3. In Compare mode, confirm snapshots go only to Stream and both panels remain
+   answer-free before Send.
+4. Press Send and verify both services receive the same text and timestamp,
+   produce cited answers, persist the turn, and reach terminal SSE events.
+5. Correct or revert a draft and confirm stale work is not promoted or resent.
+6. Exercise New turn, mode changes, and cancellation without freezing input.
+7. Check the console, network requests, and final rendered panels.
 
-1. open port 8001 and confirm the page identifies Naive;
-2. type a development question and confirm there is no snapshot request;
-3. click Send, observe immediate commit acceptance, answer/citation, persistence,
-   and a terminal event;
-4. confirm the browser console has no error.
+Browser timings are interaction evidence, not the formal benchmark. The browser
+starts both paths concurrently; the benchmark measures them sequentially.
 
-For Stream:
+## Recorded browser evidence
 
-1. open port 8002 and confirm the page identifies Stream;
-2. type the same development question, hold the completed draft for at least
-   500 ms, and confirm changed-only snapshot traffic;
-3. confirm no answer appears before Send even if evidence becomes ready;
-4. click Send and observe answer/citation, persistence, and a terminal event;
-5. edit an earlier part of a second draft and confirm stale work is not promoted.
+All three post-refactor surfaces passed with real provider calls:
 
-For comparison:
+- **Naive standalone:** no pre-Send answer; correct cited answer after Send;
+  2,249 ms TTFT and 3,357 ms total.
+- **Stream standalone:** exact evidence ready before Send, no early answer,
+  `precommit_exact` reuse; 2,137 ms TTFT and 2,921 ms total.
+- **Side-by-side Playwright:** both cited answers completed and persisted;
+  Stream 2,152 ms TTFT and 3,296 ms total versus Naive 2,865 ms and 4,116 ms.
+- **Native Chrome/Computer Use:** both panels completed with saved persistence
+  and no console errors or warnings; Stream 1,145 ms TTFT and 2,341 ms total
+  versus Naive 3,908 ms and 5,176 ms.
 
-1. open port 5173 and validate both `/v1/health` identities and contract versions;
-2. in Compare mode, hold the full draft before Send and confirm only port 8002
-   receives snapshots;
-3. confirm both answer panels still show no answer before Send;
-4. click Send and verify the exact same final text is committed independently to
-   ports 8001 and 8002;
-5. observe separate SSE lifecycles through `answer.ready`, `answer.completed`, and
-   each run terminal;
-6. exercise Cancel and New turn without freezing input controls;
-7. capture network evidence, a Chrome screenshot, console state, and the final
-   native Computer Use view.
+Rapid draft correction and reversion inside the debounce window emitted no stale
+or redundant snapshot. Mode changes rotated both path sessions.
 
-Browser timings are UI acceptance evidence, not the formal benchmark. The formal
-runner executes paths sequentially through isolated services; the comparison UI
-may commit them concurrently for a responsive side-by-side experience.
-
-## Reproducibility procedure
-
-Normal reproduction uses the committed 250-document corpus and does not download
-the upstream 705 MiB release.
+## Reproduce the development run
 
 ```bash
 cp .env.example .env
@@ -85,114 +75,28 @@ make benchmark-smoke
 make score-dev
 ```
 
-The sync step creates one real seed index, stops it, verifies quiescence, and
-clones it to isolated service stores. Reproduction evidence must record:
+Normal reproduction uses the committed 250-document corpus, creates one real seed
+index, stops it, and clones it into two isolated stores. It does not download the
+705 MiB upstream release.
 
-- elapsed setup, verification, index, run, and scoring times;
-- dataset, source, configuration, and service fingerprints;
-- exactly 250 documents and 1,000 physical points in each service;
-- different role/instance/state identities;
-- five dev questions and ten completed path outputs;
-- prediction and manifest hashes;
-- explicit accounting-completeness/lower-bound status.
+Record elapsed time, hashes/fingerprints, 1,000 physical points per service, 10
+completed path outputs, and whether cost accounting is complete. Provider latency
+and first-time downloads vary; 15–20 minutes is a target, not a guarantee.
 
-Provider latency and first-time package downloads vary. The intended full
-development reproduction remains within the user's 15–20 minute envelope, but a
-measured wall time must be reported as observed evidence, not a guarantee.
+## Recorded benchmark evidence
 
-## Deletion/isolation checks
+- seed provisioning: 55.13 s, 250 documents, 1,000 points
+- runner: 205.92 s shell wall time, 10/10 outputs, complete integrity
+- both paths: 100% automatic answer/support/citation proxies; 0% human review
+- Stream: 5/5 TTFT wins; median delta -784.373 ms (-40.160%)
+- Naive cost: $0.05521131 complete
+- Stream observed cost: at least $0.09669918; paired cost comparison invalid
 
-Architecture tests must also prove the ownership claim:
+Full interpretation is in [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
 
-- `comparison/` production code imports no application package;
-- `shared/` imports no implementation or comparison package;
-- Naive imports `shared/` only, and Stream imports `shared/` only;
-- the Naive app imports and serves when Stream/comparison are unavailable;
-- the Stream app imports and serves when Naive/comparison are unavailable;
-- deleting the optional comparison client cannot affect either single-path UI or
-  API.
+## Boundary
 
-## Non-blocking boundary
-
-FastAPI and OpenAI/PydanticAI operations are async. Embedded Qdrant's synchronous
-client runs on a dedicated worker, and dataset/log I/O is offloaded. The browser
-keeps one changed snapshot active plus one replaceable latest draft; Send aborts
-obsolete snapshot transport without waiting for it. `answer.ready` ends visible
-loading before bounded persistence, while SSE stays open for final accounting and
-the terminal event.
-
-These controls support the intended local reviewer load. They are not evidence of
-production-scale concurrency; that would require an authenticated deployment and
-a separate HTTP/OpenAI load campaign.
-
-## Evidence status
-
-The current development API benchmark and index reproduction are complete for the
-source and configuration hashes recorded in their manifests:
-
-- seed provisioning completed in 48.28 seconds and produced 1,000 points from all
-  250 complete documents before cloning into isolated Naive and Stream stores;
-- the runner completed 5 development questions and 10 path runs in 208.13 seconds
-  by shell wall clock, with a 207.796-second finalized manifest interval, zero
-  path-output failures, and `complete` run integrity;
-- both paths scored 100% on the fixed automatic answer/alias and support/citation
-  proxies; human semantic-adjudication coverage remains 0%;
-- Stream won TTFT on 5/5 pairs, with median paired TTFT delta -1,480.697 ms
-  (-52.146%), paired p95 TTFT delta -960.058 ms, median total delta -1,678.759 ms,
-  and median evidence lead at Send 3,053.377 ms. Every observed stabilization
-  stratum favored Stream TTFT, including the one `late_stabilization` question;
-- Stream used more work (17 controller attempts, 13 retrievals, and 14
-  usage-accounted model calls) than Naive (5 retrievals and 5 usage-accounted
-  model calls). Stream had five cancelled controller calls, one cancelled
-  retrieval, two controller timeouts, and one controller failure without complete
-  provider usage, so its $0.08950950 observed cost is a lower bound; no paired cost
-  conclusion is valid. Naive's fully accounted observed cost was $0.05533131.
-
-This is development-only, non-final evidence. The sealed test split was not run.
-The current-source user-interface acceptance checks are complete:
-
-| Check | Status |
-|---|---|
-| Headed Playwright with Google Chrome | Passed |
-| Independent Chrome inspection | Passed |
-| Native Computer Use inspection | Passed |
-
-The headed Playwright pass exercised all three surfaces with real provider calls.
-The Naive standalone page issued no snapshot request and returned a complete,
-cited Dune answer after Send (2,680 ms TTFT; 3,109 ms total). The Stream
-standalone page prepared exact evidence before Send without showing an answer and
-returned the same cited answer with `precommit_exact` reuse (2,144 ms TTFT;
-2,682 ms total). A rapid edit to a different draft and reversion within the
-debounce window emitted no stale or redundant snapshot. Both standalone consoles
-had zero warnings and errors.
-
-On the comparison page, the final pre-Send Dune draft produced exactly one Stream
-snapshot and no Naive snapshot or visible answer. Both commit requests carried
-the exact same text and timestamp (`2026-07-18T20:40:03.728Z`) to the two
-independent services. Stream reached first token in 1,519 ms versus 2,156 ms for
-Naive and completed in 1,976 ms versus 2,555 ms. Both returned the same correct,
-cited answer with saved persistence, and the console had zero warnings and
-errors.
-
-A second, context-dependent turn asked who wrote the source novel. Each path
-retained its own prior session ID, both used the local retrieval tool once, and
-both correctly answered Frank Herbert with the same valid citation. This harder
-live diagnostic also exposed a real tail case: Stream took 6,012 ms TTFT versus
-5,114 ms for Naive, so the UI does not imply a per-query speed guarantee. A mode
-change then rotated both path sessions; the next pre-Send Stream snapshot used a
-new session and still displayed no answer. The retained capture is
-[`output/playwright/final-verified-compare.png`](../output/playwright/final-verified-compare.png).
-
-A separate native Chrome session repeated the comparison interaction. Before
-Send, the page reported `Exact draft evidence ready` while both panels still said
-`No answer yet`. After Send, both panels completed with the same Denis Villeneuve
-answer and three source links. In that diagnostic run, Stream TTFT was 1,783 ms
-versus 3,021 ms for Naive and total time was 2,220 ms versus 3,494 ms. Native
-Computer Use independently inspected the rendered Chrome window and confirmed
-the two complete panels, citations, ready-before-Send indicator, saved
-persistence, and displayed latency deltas.
-
-These browser timings prove interaction and lifecycle behavior only. The external
-five-question development benchmark above remains the primary measured
-performance evidence, but it is permanently non-reportable and subject to its
-candidate-data and zero-human-adjudication limitations.
+FastAPI and OpenAI work are async; local Qdrant work runs on a dedicated worker.
+The browser keeps one active snapshot plus one replaceable latest draft and aborts
+obsolete transport at Send. This is sufficient for a local reviewer, not proof of
+production-scale concurrency or security.

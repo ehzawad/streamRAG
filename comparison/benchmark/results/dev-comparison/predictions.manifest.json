@@ -1,7 +1,7 @@
 {
   "backend_instance_ids": {
-    "naive": "b7e633b3-9ecb-4ce3-922a-a57f705d02e8",
-    "stream": "6206b24a-7a03-4500-a1f2-cbd7e628fc91"
+    "naive": "9ad58e94-fee8-49c7-9aa0-03c64f4fd51d",
+    "stream": "2f30d8b3-bd83-423d-92c4-7597de996c3c"
   },
   "benchmark_harness_sha256": {
     "run_benchmark.py": "4f51bfd2dad0a23e9bc2db8b76a9930741eace11c4a370e9cdfcb253615ee2a2",
@@ -41,8 +41,8 @@
     "index_pipeline_version"
   ],
   "completed_outputs": 10,
-  "completed_unix_s": 1784407105.8900821,
-  "created_unix_s": 1784406898.0936298,
+  "completed_unix_s": 1784410884.731183,
+  "created_unix_s": 1784410679.1347451,
   "data_status": {
     "naive": {
       "approval_status": "candidate_pending_human_review",
@@ -87,7 +87,7 @@
       "index_version": 1,
       "indexed_chunks": 1000,
       "indexed_desired_chunks": 1000,
-      "instance_id": "b7e633b3-9ecb-4ce3-922a-a57f705d02e8",
+      "instance_id": "9ad58e94-fee8-49c7-9aa0-03c64f4fd51d",
       "metrics_contract_version": 1,
       "model": "gpt-5.6-sol",
       "reasoning_effort": "medium",
@@ -140,7 +140,7 @@
       "index_version": 1,
       "indexed_chunks": 1000,
       "indexed_desired_chunks": 1000,
-      "instance_id": "6206b24a-7a03-4500-a1f2-cbd7e628fc91",
+      "instance_id": "2f30d8b3-bd83-423d-92c4-7597de996c3c",
       "metrics_contract_version": 1,
       "model": "gpt-5.6-sol",
       "parallel_raw_retrieval": true,
@@ -175,7 +175,7 @@
   "prediction_rows_expected": 10,
   "prediction_rows_observed": 10,
   "predictions": "predictions.jsonl",
-  "predictions_sha256": "3a7326e9e7f600d5d439815de2e4140afee313f0805913804bcbd258c0809bb5",
+  "predictions_sha256": "4a4a2afbf9eb314bd992d5bdf1f02111374aa1c3d79f8db4c1a7f9930233e13d",
   "preregistered_protocol_gate": {
     "required_case_deadline_s": 45.0,
     "required_max_typing_drift_ms": 100.0,
@@ -206,7 +206,7 @@
   "repetitions": 1,
   "reportable": false,
   "run_status": "completed_non_reportable",
-  "run_tag": "ace7388ea5",
+  "run_tag": "b4917c4d19",
   "schema_version": 4,
   "scorer_isolation": {
     "binding": "query SHA-256 plus opaque evaluation freeze_id",
@@ -239,7 +239,7 @@
   },
   "timing_drift_gate": {
     "max_allowed_abs_drift_ms": 100.0,
-    "max_observed_abs_drift_ms": 2.563154424940876,
+    "max_observed_abs_drift_ms": 2.2603750228881836,
     "observations": 10,
     "status": "complete",
     "violations": 0

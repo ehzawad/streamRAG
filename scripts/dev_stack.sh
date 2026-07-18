@@ -6,7 +6,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-dev_state_root="${BENCH_DEV_STATE_ROOT:-comparison/benchmark/results/dev-services}"
+dev_state_root="${APP_STATE_ROOT:-var/dev-services}"
 mkdir -p "$dev_state_root/naive" "$dev_state_root/stream"
 
 ALLOW_UNREVIEWED_DATASET=1 \
@@ -21,5 +21,5 @@ RUNTIME_DB="$dev_state_root/stream/runtime.sqlite3" \
 METRICS_LOG="$dev_state_root/stream/requests.jsonl" \
 uv run uvicorn stream.api:app --reload --host 127.0.0.1 --port 8002 &
 
-(cd comparison/frontend && npm run dev -- --host 127.0.0.1) &
+(cd frontend && npm run dev -- --host 127.0.0.1) &
 wait

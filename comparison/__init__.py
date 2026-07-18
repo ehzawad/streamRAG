@@ -1,1 +1,1 @@
-"""Black-box comparison client, benchmark, scoring, and frontend."""
+"""Headless black-box provisioning, benchmarking, and scoring."""

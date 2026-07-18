@@ -1,135 +1,78 @@
 # Typed StreamRAG assessment
 
-A typed-input, full-stack comparison of Naive RAG and StreamRAG over a fixed
-local CRAG corpus. The implementation transfers the paper's scheduling idea to
-text; it does not claim to reproduce its speech stack or post-trained trigger.
+A working full-stack comparison of Naive RAG and Typed StreamRAG. Naive waits
+for Send; Stream uses the typing window to prepare evidence and still answers
+only after Send.
 
-> **Dataset gate:** [`data/crag_eval`](data/crag_eval) is the only dataset. It
-> contains 5 development questions, 10 sealed test questions, 250 complete
-> documents, and exactly 1,000 chunks/Qdrant points. Its current status is
-> `candidate_pending_human_review`. Development checks are allowed; the final
-> unseen benchmark remains blocked until a reviewer changes the status and
-> checksums to `approved_frozen`.
+It adapts the StreamRAG scheduling idea to typed input; speech and a trained
+trigger are out of scope.
 
-## Architecture
+## Fixed data and current result
 
-The repository has four explicit ownership boundaries:
+- **Knowledge base:** 250 complete CRAG-derived documents, deterministically
+  split into exactly 1,000 chunks/local Qdrant points.
+- **Retrieval:** `text-embedding-3-large` at 3,072 dimensions. Embedded Qdrant
+  needs no account or API key.
+- **Evaluation:** 5 development questions and 10 sealed, unseen test questions.
+  The only dataset is [`data/crag_eval`](data/crag_eval).
+- **Gate:** status is `candidate_pending_human_review`. Development checks are
+  allowed; the sealed test set cannot run until a reviewer approves and freezes
+  the dataset and its checksums.
 
-```text
-shared/       reusable API lifecycle, agent, corpus/index, memory, and contracts
-naive/        Path A service; imports shared, never Stream or comparison
-stream/       Path B service; imports shared, never Naive or comparison
-comparison/   external HTTP/JSON client, UI, benchmark runner, and scorer
-```
+The latest real-API development smoke run had equal 100% automatic answer and
+citation proxies. Stream won first-token latency on 5/5 questions, with a median
+784.373 ms (40.160%) improvement. This is directional development evidence,
+not a final benchmark: the sample is small, no answers were human-adjudicated,
+and the sealed test set remains untouched. See
+[`docs/BENCHMARK_REPORT.md`](docs/BENCHMARK_REPORT.md).
 
-- `naive.api:app` is an independently runnable FastAPI service and same-origin
-  single-path UI on port 8001.
-- `stream.api:app` is an independently runnable FastAPI service and same-origin
-  single-path UI on port 8002.
-- Neither implementation imports or calls the other.
-- `comparison/` imports no application package. It treats both services as
-  versioned HTTP/JSON/SSE endpoints.
-- Deleting `comparison/` leaves both single-path full-stack apps runnable and
-  testable. Deleting either implementation leaves the other implementation and
-  `shared/` as a complete single-path app.
-- `shared/` contains mechanisms that are genuinely identical: dataset and index
-  integrity, embeddings/search, grounded answer generation, memory, event
-  lifecycle, and the versioned telemetry envelope. It contains no path selector
-  and no comparison orchestration.
+## Three runnable UIs
 
-Formal A/B runs use separate processes, Qdrant directories, SQLite databases,
-metrics logs, sessions, and cache namespaces. Provisioning embeds one temporary
-seed index, stops that process, verifies quiescence, then copies its Qdrant data
-and matching SQLite index metadata into two isolated stores. The running services
-never share mutable state. Each service can also build its own index through
-`POST /v1/data/sync`.
+| Experience | URL | Dependency |
+| --- | --- | --- |
+| Naive only | <http://127.0.0.1:8001> | `naive/` + `shared/` |
+| Stream only | <http://127.0.0.1:8002> | `stream/` + `shared/` |
+| Naive, Stream, or side-by-side | <http://127.0.0.1:5173> | `frontend/` + selected APIs |
 
-See [`shared/README.md`](shared/README.md), [`naive/README.md`](naive/README.md),
-[`stream/README.md`](stream/README.md), and
-[`comparison/README.md`](comparison/README.md) for the individual boundaries.
+`naive/` and `stream/` are independently runnable products. Neither imports or
+calls the other. `frontend/` is only the GUI; it calls the APIs over HTTP/SSE.
+`comparison/` is a separate headless CLI for provisioning, replay, scoring, and
+reports. Removing either consumer does not affect the APIs or the other consumer.
+`shared/` holds only the corpus/index, answer, memory, API lifecycle, single-path
+UI shell, and metric contracts that must be common for a fair test.
 
-## Compared behavior
-
-Naive RAG begins exact committed-text retrieval only after Send. Typed StreamRAG
-accepts changed cumulative drafts before Send, uses a bounded low-reasoning model
-trigger while the text evolves, and may start exact retrieval after the latest
-delivered draft remains unchanged for 500 ms. Speculative evidence stays private.
-Only Send can commit evidence and start the grounded answer.
-
-At Send, Stream may reuse completed evidence only when its source text literally
-equals the commit, or await an already-running literal-exact retrieval. A changed
-or failed candidate takes the same bounded committed-text fallback as Naive. Both
-paths therefore share the answer model, prompt, corpus, chunker, embeddings,
-search policy, memory, and scorer; Stream alone owns draft analysis, triggering,
-speculation, cancellation, reuse, and fallback diagnostics.
-
-The stack uses Python 3.14, FastAPI/SSE, PydanticAI over OpenAI Responses,
-`gpt-5.6-sol` (medium answer reasoning; low trigger/summary reasoning),
-`text-embedding-3-large` at 3,072 dimensions, SQLite, embedded Qdrant, and a
-React/Vite comparison client. Live indexing and answer verification use a real
-OpenAI key and real local vector search. No live-path dependency is mocked.
-
-## Run each implementation independently
+## Run the complete comparison
 
 ```bash
 cp .env.example .env
 # Set a real OPENAI_API_KEY in .env.
 make setup
-```
-
-The candidate override is development-only. Use distinct state paths when both
-services run on one workstation.
-
-Naive only:
-
-```bash
-ALLOW_UNREVIEWED_DATASET=1 \
-QDRANT_PATH=./var/naive/qdrant \
-RUNTIME_DB=./var/naive/runtime.sqlite3 \
-METRICS_LOG=./var/naive/requests.jsonl \
-uv run uvicorn naive.api:app --host 127.0.0.1 --port 8001
-
-# In another terminal, once per fresh state directory:
-curl --fail --request POST http://127.0.0.1:8001/v1/data/sync
-```
-
-Stream only:
-
-```bash
-ALLOW_UNREVIEWED_DATASET=1 \
-QDRANT_PATH=./var/stream/qdrant \
-RUNTIME_DB=./var/stream/runtime.sqlite3 \
-METRICS_LOG=./var/stream/requests.jsonl \
-uv run uvicorn stream.api:app --host 127.0.0.1 --port 8002
-
-# In another terminal, once per fresh state directory:
-curl --fail --request POST http://127.0.0.1:8002/v1/data/sync
-```
-
-Their single-path UIs are available at <http://127.0.0.1:8001> and
-<http://127.0.0.1:8002>; schemas are at `/docs` on the same ports. The shareable
-UI shell reads each service's capabilities: Naive never exposes or sends
-snapshots, while Stream enables its pre-Send snapshot flow.
-
-## Run the comparison application
-
-The normal development launcher starts both isolated APIs and the external
-comparison UI:
-
-```bash
-make setup-comparison
 make verify-data
-make benchmark-dev-services-sync
-make dev-comparison-stack
+make dev-stack
 ```
 
-Open <http://127.0.0.1:5173>. The client sends Stream snapshots only to port
-8002 and, in Compare mode, commits the same final text concurrently to ports 8001
-and 8002. It never asks one backend to execute the other path. The one-time sync
-uses the real embedding API and prepares the exact isolated state directories used
-by the launcher; a fresh checkout is not ready until that step completes.
+In another terminal, run `make sync-app` once, then open
+<http://127.0.0.1:5173>. Each API builds and owns its own Qdrant, SQLite,
+metrics, session, and cache state under `var/`. Live indexing and answers use
+OpenAI and local vector search; no live-path dependency is mocked. The faster
+stopped-seed cloning workflow belongs only to the headless benchmark.
 
-For an explicit two-service development benchmark:
+Exact standalone commands are in [`naive/README.md`](naive/README.md) and
+[`stream/README.md`](stream/README.md). Component contracts are in
+[`shared/README.md`](shared/README.md) and
+[`comparison/README.md`](comparison/README.md); GUI commands are in
+[`frontend/README.md`](frontend/README.md).
+
+## Correctness boundary
+
+Stream receives changed drafts and may retrieve after the latest delivered draft
+has been unchanged for 500 ms. Draft evidence stays private. At Send, Stream can
+reuse it only when the recorded draft exactly matches the committed text;
+otherwise it performs the same committed-text retrieval as Naive. Both paths use
+the same answer model, prompt, corpus, chunker, embeddings, search policy, memory,
+and scorer.
+
+## Run the development benchmark
 
 ```bash
 make verify-data
@@ -144,43 +87,36 @@ make benchmark-smoke
 make score-dev
 ```
 
-`benchmark-dev-services-sync` makes one real embedding build and clones only the
-stopped, quiescent seed state. The smoke runner uses the 5 development questions
-and remains permanently non-reportable. The final runner uses all 10 test
-questions only after dataset approval and a redacted inference bundle is created.
+The smoke run uses only the 5 development questions and is never a final
+reportable result. Stream-only trigger, speculation, reuse, cancellation, and
+fallback details are reported separately from metrics shared with Naive.
 
-## Metrics
-
-Each service emits its own telemetry and identifies its implementation and metric
-contract version. The external comparison retains the full records, then compares
-only metrics with the same meaning on both paths:
-
-- submit-to-first-token and total response time;
-- completion, failure, and timeout counts;
-- expected-answer/alias and false-premise proxies;
-- evidence support and exact citation validity;
-- model/retrieval calls, token usage, accounting coverage, and observed cost.
-
-Stream-only diagnostics—controller decisions, speculative retrievals, evidence
-lead, reuse, stale discards, cancellation, and commit fallback—are reported as
-Stream behavior, never synthesized for Naive or used as a false shared metric.
-See [`docs/BENCHMARK_REPORT.md`](docs/BENCHMARK_REPORT.md).
-
-## Verification and limits
+## Verify and operate safely
 
 ```bash
 make verify-data
 make check
+make docker-config
 ```
 
-The committed corpus makes normal reproduction independent of the 705 MiB
-upstream CRAG download. Embedded Qdrant needs no account or API key. The services
-are asynchronous at the HTTP/OpenAI layer; synchronous local-Qdrant work runs off
-the event loop. This is a bounded local assessment, not a production multi-user
-service.
+For the tested local Docker stack, set `OPENAI_API_KEY` and
+`ALLOW_UNREVIEWED_DATASET=1` in `.env`, then run `make docker-up`. From another
+terminal run `make docker-sync` once and open <http://127.0.0.1:5173>. Stop and
+remove the containers with `make docker-down`. The override permits only local
+development on the candidate dataset; it does not approve or unseal evaluation
+data.
 
-All ports bind to loopback. There is no authentication, authorization, rate
-limiting, or tenant isolation, so do not expose either API or the UI to a LAN or
-public interface. See [`docs/SECURITY.md`](docs/SECURITY.md),
-[`docs/DATASET.md`](docs/DATASET.md), and
+The committed corpus avoids the 705 MiB upstream download. The APIs are async;
+synchronous local-Qdrant work runs off the event loop. This is a bounded local
+assessment, not a production multi-user service. All ports bind to loopback and
+there is no authentication, authorization, rate limiting, or tenant isolation.
+Do not expose the stack to a LAN or public interface. See
+[`docs/SECURITY.md`](docs/SECURITY.md) and
 [`docs/REAL_USER_VERIFICATION.md`](docs/REAL_USER_VERIFICATION.md).
+
+## Attribution
+
+The 250-document corpus is derived from Meta's
+[CRAG Task 1/2 development release](https://github.com/facebookresearch/CRAG)
+under **CC BY-NC 4.0**; source IDs and URLs are retained for attribution and
+audit. Dependencies remain under the licenses shipped with their distributions.

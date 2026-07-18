@@ -17,21 +17,22 @@ DEV_QUERY_LIMIT ?= 5
 DEV_PREDICTIONS ?= comparison/benchmark/results/dev-comparison/predictions.jsonl
 DEV_SUMMARY ?= comparison/benchmark/results/dev-comparison/summary.json
 
-.PHONY: setup setup-python setup-comparison dev-naive dev-stream dev-comparison \
-	dev-comparison-stack check check-shared check-naive \
-	check-stream check-comparison build verify-data crag-source sync-naive sync-stream \
+.PHONY: setup setup-python setup-frontend dev-naive dev-stream dev-frontend \
+	dev-stack check check-shared check-naive check-stream check-comparison \
+	check-frontend build verify-data crag-source sync-naive sync-stream \
+	sync-app \
 	benchmark-inference-bundle benchmark-services-check benchmark-services-sync \
 	benchmark-services-serve benchmark-dev-services-check benchmark-dev-services-sync \
 	benchmark-dev-services-serve benchmark-smoke score-dev benchmark score score-final \
-	docker-up docker-down
+	docker-config docker-build docker-up docker-sync docker-down
 
-setup: setup-python
+setup: setup-python setup-frontend
 
 setup-python:
 	uv sync --frozen --python 3.14
 
-setup-comparison: setup-python
-	cd comparison/frontend && npm ci
+setup-frontend:
+	cd frontend && npm ci
 
 dev-naive:
 	mkdir -p $(APP_STATE_ROOT)/naive
@@ -47,11 +48,11 @@ dev-stream:
 		METRICS_LOG=$(APP_STATE_ROOT)/stream/requests.jsonl \
 		uv run uvicorn stream.api:app --reload --host 127.0.0.1 --port 8002
 
-dev-comparison:
-	cd comparison/frontend && npm run dev -- --host 127.0.0.1
+dev-frontend:
+	cd frontend && npm run dev -- --host 127.0.0.1
 
-dev-comparison-stack:
-	./comparison/dev.sh
+dev-stack:
+	APP_STATE_ROOT="$(APP_STATE_ROOT)" ./scripts/dev_stack.sh
 
 check-shared:
 	uv run ruff check shared scripts
@@ -68,18 +69,20 @@ check-stream:
 check-comparison:
 	uv run ruff check comparison
 	uv run pytest -q comparison/tests
-	cd comparison/frontend && npm test
-	cd comparison/frontend && npm run build
+
+check-frontend:
+	cd frontend && npm test
+	cd frontend && npm run build
 
 check:
 	uv run ruff check shared naive stream comparison scripts
 	uv run pytest -q
-	cd comparison/frontend && npm test
-	cd comparison/frontend && npm run build
+	cd frontend && npm test
+	cd frontend && npm run build
 
 build:
 	uv build
-	cd comparison/frontend && npm run build
+	cd frontend && npm run build
 
 verify-data:
 	uv run python -m scripts.verify_dataset
@@ -92,6 +95,8 @@ sync-naive:
 
 sync-stream:
 	curl --fail --show-error --request POST $(STREAM_BASE_URL)/v1/data/sync
+
+sync-app: sync-naive sync-stream
 
 benchmark-inference-bundle:
 	uv run python -m comparison.prepare_inference_bundle \
@@ -157,8 +162,16 @@ score-final:
 		--predictions $(BENCH_PREDICTIONS) --output $(BENCH_SUMMARY) \
 		--adjudications $(BENCH_ADJUDICATIONS) --require-manual-adjudication
 
+docker-config:
+	docker compose config --quiet
+
+docker-build: docker-config
+	docker compose build
+
 docker-up:
 	docker compose up --build
+
+docker-sync: sync-naive sync-stream
 
 docker-down:
 	docker compose down

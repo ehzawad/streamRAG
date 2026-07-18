@@ -18,11 +18,11 @@ data/*.sqlite3
 data/*.sqlite3-*
 tmp/
 var/
-comparison/frontend/node_modules/
-comparison/frontend/dist/
-comparison/frontend/*.tsbuildinfo
-comparison/frontend/vite.config.js
-comparison/frontend/vite.config.d.ts
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
 comparison/benchmark/results/**
 !comparison/benchmark/results/.gitkeep
 !comparison/benchmark/results/dev-comparison/
