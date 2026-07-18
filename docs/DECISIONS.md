@@ -20,12 +20,23 @@ managed vector infrastructure, and production deployment are outside scope.
 | `shared/` | corpus/index, agent/tool, memory, API lifecycle, single-path UI, common contracts | external libraries |
 | `naive/` | retrieve the committed question after Send | `shared/` |
 | `stream/` | typed snapshots, trigger, speculative retrieval, commit validation | `shared/` |
-| `frontend/` | optional Naive, Stream, and side-by-side GUI | service HTTP/JSON/SSE contracts |
+| `frontend/` | route homepage plus Naive, Stream, and side-by-side GUI | service HTTP/JSON/SSE contracts |
 | `comparison/` | headless provisioning, replay, scoring, and reports | service HTTP/JSON/SSE contracts |
 
 Deleting `frontend/` leaves both APIs and the comparison CLI working. Deleting
 `comparison/` leaves both APIs and the GUI working. Deleting either path does not
 break the other. Neither consumer imports application code.
+
+The frontend is one browser origin: `/naive`, `/stream`, and `/compare` call
+distinct same-origin proxy paths. Direct service ports remain available for
+component development and the headless benchmark, not as end-user navigation.
+Single-path routes discover only their selected API and retry bounded readiness
+probes, so an unavailable peer cannot block an otherwise healthy product.
+
+Conversation state belongs to the selected backend, not the frontend. The UI
+reuses one opaque session ID for follow-ups and rotates it on **New chat**. In
+Compare, each backend keeps a distinct session with the same visible turns; no
+memory or cache state crosses implementations.
 
 The provisioner is the only local deployment helper aware of both entrypoints. It
 copies a stopped seed index before measurement; it does not run or score questions.

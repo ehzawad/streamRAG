@@ -119,30 +119,13 @@ export type ServiceTopology = {
   comparisonError: string | null;
 };
 
-type ApiEnvironment = {
-  VITE_NAIVE_API_URL?: string;
-  VITE_STREAM_API_URL?: string;
-};
-
-const apiEnvironment =
-  (import.meta as ImportMeta & { env?: ApiEnvironment }).env ?? {};
-const browserProtocol =
-  typeof window === "undefined" ? "http:" : window.location.protocol;
-const browserHostname =
-  typeof window === "undefined" ? "localhost" : window.location.hostname;
-
 const SERVICE_URLS: Record<AnswerPath, string> = {
-  naive: (
-    apiEnvironment.VITE_NAIVE_API_URL ||
-    `${browserProtocol}//${browserHostname}:8001`
-  ).replace(/\/$/, ""),
-  stream: (
-    apiEnvironment.VITE_STREAM_API_URL ||
-    `${browserProtocol}//${browserHostname}:8002`
-  ).replace(/\/$/, ""),
+  naive: "/api/naive",
+  stream: "/api/stream",
 };
 
 export const METRICS_CONTRACT_VERSION = 1;
+const TOPOLOGY_REQUEST_TIMEOUT_MS = 5_000;
 
 const COMMON_IDENTITY_FIELDS = [
   "shared_source_sha256",
@@ -169,10 +152,31 @@ export function serviceBaseUrl(implementation: AnswerPath): string {
   return SERVICE_URLS[implementation];
 }
 
-async function fetchJson<T>(implementation: AnswerPath, path: string): Promise<T> {
-  const response = await fetch(`${serviceBaseUrl(implementation)}${path}`);
-  if (!response.ok) throw new Error(`${implementation} ${path} failed: ${response.status}`);
-  return response.json() as Promise<T>;
+async function fetchJson<T>(
+  implementation: AnswerPath,
+  path: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  const timeout = globalThis.setTimeout(abort, TOPOLOGY_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${serviceBaseUrl(implementation)}${path}`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`${implementation} ${path} failed: ${response.status}`);
+    return response.json() as Promise<T>;
+  } catch (error) {
+    if (controller.signal.aborted && !signal?.aborted) {
+      throw new Error(`${implementation} ${path} timed out`);
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeout);
+    signal?.removeEventListener("abort", abort);
+  }
 }
 
 async function post<T>(
@@ -240,10 +244,13 @@ function assertServiceContract(
   }
 }
 
-export async function probeService(implementation: AnswerPath): Promise<ServiceProbe> {
+export async function probeService(
+  implementation: AnswerPath,
+  signal?: AbortSignal,
+): Promise<ServiceProbe> {
   const [health, data] = await Promise.all([
-    fetchJson<ServiceHealth>(implementation, "/v1/health"),
-    fetchJson<ServiceDataStatus>(implementation, "/v1/data/status"),
+    fetchJson<ServiceHealth>(implementation, "/v1/health", signal),
+    fetchJson<ServiceDataStatus>(implementation, "/v1/data/status", signal),
   ]);
   assertServiceContract(implementation, health, data);
   return { health, data };
@@ -272,8 +279,9 @@ export function validateServiceIsolation(
   naiveUrl = serviceBaseUrl("naive"),
   streamUrl = serviceBaseUrl("stream"),
 ): void {
-  const normalizedNaiveUrl = new URL(naiveUrl).href.replace(/\/$/, "");
-  const normalizedStreamUrl = new URL(streamUrl).href.replace(/\/$/, "");
+  const baseUrl = typeof window === "undefined" ? "http://localhost" : window.location.origin;
+  const normalizedNaiveUrl = new URL(naiveUrl, baseUrl).href.replace(/\/$/, "");
+  const normalizedStreamUrl = new URL(streamUrl, baseUrl).href.replace(/\/$/, "");
   if (normalizedNaiveUrl === normalizedStreamUrl) {
     throw new Error("Naive and Stream must use distinct service URLs");
   }
@@ -287,9 +295,13 @@ export function validateServiceIsolation(
   }
 }
 
-export async function getServiceTopology(): Promise<ServiceTopology> {
-  const implementations: AnswerPath[] = ["naive", "stream"];
-  const settled = await Promise.allSettled(implementations.map(probeService));
+export async function getServiceTopology(
+  implementations: readonly AnswerPath[] = ["naive", "stream"],
+  signal?: AbortSignal,
+): Promise<ServiceTopology> {
+  const settled = await Promise.allSettled(
+    implementations.map((implementation) => probeService(implementation, signal)),
+  );
   const services: Partial<Record<AnswerPath, ServiceProbe>> = {};
   const errors: Partial<Record<AnswerPath, string>> = {};
 
@@ -301,14 +313,14 @@ export async function getServiceTopology(): Promise<ServiceTopology> {
   });
 
   let comparisonError: string | null = null;
-  if (services.naive && services.stream) {
+  if (implementations.length === 2 && services.naive && services.stream) {
     try {
       validateServiceIsolation(services.naive, services.stream);
       validateCommonIdentity(services.naive.data, services.stream.data);
     } catch (error) {
       comparisonError = error instanceof Error ? error.message : String(error);
     }
-  } else {
+  } else if (implementations.length === 2) {
     comparisonError = "both isolated services are required for comparison";
   }
   return { services, errors, comparisonError };

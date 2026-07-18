@@ -7,17 +7,19 @@
 
 | Surface | URL | Expected behavior |
 |---|---|---|
-| Naive | `http://127.0.0.1:8001` | no pre-Send retrieval; answer and citations after Send |
-| Stream | `http://127.0.0.1:8002` | evidence may prepare while typing; no answer before Send |
-| Frontend | `http://127.0.0.1:5173` | Naive, Stream, or the same commit to two isolated services |
+| Homepage | `http://127.0.0.1:5173/` | links to all three experiences |
+| Naive | `http://127.0.0.1:5173/naive` | no pre-Send retrieval; answer and citations after Send |
+| Stream | `http://127.0.0.1:5173/stream` | evidence may prepare while typing; no answer before Send |
+| Compare | `http://127.0.0.1:5173/compare` | the same commit sent to two isolated services |
 
 Live acceptance requires a real `OPENAI_API_KEY`, real Responses calls,
 `text-embedding-3-large`, and local Qdrant. Unit-test stubs do not support live
 latency, correctness, cost, or reproducibility claims.
 
 The services must expose different implementation roles, instance IDs, Qdrant
-directories, SQLite databases, logs, sessions, and cache scopes. The GUI and CLI
-call ports 8001 and 8002 directly; neither backend may dispatch its peer.
+directories, SQLite databases, logs, sessions, and cache scopes. The GUI uses
+same-origin proxy paths; the CLI calls ports 8001 and 8002 directly. Neither
+backend may dispatch its peer.
 
 ## Browser checklist
 
@@ -32,29 +34,36 @@ result with native Computer Use.
    answer-free before Send.
 4. Press Send and verify both services receive the same text and timestamp,
    produce cited answers, persist the turn, and reach terminal SSE events.
-5. Correct or revert a draft and confirm stale work is not promoted or resent.
-6. Exercise New turn, mode changes, and cancellation without freezing input.
-7. Check the console, network requests, and final rendered panels.
+5. Ask a referential follow-up and confirm each path uses its own prior answer as
+   context. Select New chat and confirm that context and transcript both reset.
+6. Correct or revert a draft and confirm stale work is not promoted or resent.
+7. Exercise route changes and cancellation without freezing input.
+8. Check the console, network requests, and final rendered panels.
 
 Browser timings are interaction evidence, not the formal benchmark. The browser
 starts both paths concurrently; the benchmark measures them sequentially.
 
 ## Recorded browser evidence
 
-All three post-refactor surfaces passed with real provider calls:
+All routed surfaces passed in Chrome with human-speed keyboard events, real
+provider calls, and the same two-turn conversation:
 
-- **Naive standalone:** no pre-Send answer; correct cited answer after Send;
-  2,249 ms TTFT and 3,357 ms total.
-- **Stream standalone:** exact evidence ready before Send, no early answer,
-  `precommit_exact` reuse; 2,137 ms TTFT and 2,921 ms total.
-- **Side-by-side Playwright:** both cited answers completed and persisted;
-  Stream 2,152 ms TTFT and 3,296 ms total versus Naive 2,865 ms and 4,116 ms.
-- **Native Chrome/Computer Use:** both panels completed with saved persistence
-  and no console errors or warnings; Stream 1,145 ms TTFT and 2,341 ms total
-  versus Naive 3,908 ms and 5,176 ms.
+- **Naive:** both turns were correct and cited; the follow-up resolved to a
+  short-term capital gain. TTFT was 3,475 ms then 3,433 ms.
+- **Stream:** evidence was ready before Send on both turns; both answers were
+  correct and cited. TTFT was 1,541 ms then 1,298 ms.
+- **Compare:** both isolated histories resolved the same follow-up correctly.
+  Stream was faster on the first turn (997 vs 1,939 ms TTFT) and slower on the
+  second (2,397 vs 1,969 ms), showing normal provider variance rather than a
+  guaranteed per-request win.
+- **Direct Stream service UI:** a second referential question correctly resolved
+  the 2021 Dune film and answered Hans Zimmer; both turns reused exact pre-Send
+  evidence.
 
-Rapid draft correction and reversion inside the debounce window emitted no stale
-or redundant snapshot. Mode changes rotated both path sessions.
+The homepage and all three deep links loaded through one origin. New chat removed
+the transcript and rotated the active sessions. A direct Stream pre-Send reset
+also accepted a new human-typed draft and prepared fresh evidence. No answer
+appeared before Send.
 
 ## Reproduce the development run
 

@@ -61,6 +61,22 @@ def test_frontend_is_not_owned_by_the_comparison_package() -> None:
     assert not (ROOT / "comparison" / "frontend").exists()
 
 
+def test_frontend_exposes_stable_single_origin_routes() -> None:
+    nginx = (ROOT / "frontend" / "nginx.conf").read_text(encoding="utf-8")
+    routes = (ROOT / "frontend" / "src" / "routes.ts").read_text(encoding="utf-8")
+
+    assert "try_files $uri $uri/ /index.html;" in nginx
+    assert "location /api/naive/" in nginx
+    assert "server naive:8001 resolve;" in nginx
+    assert "proxy_pass http://naive_backend/;" in nginx
+    assert "location /api/stream/" in nginx
+    assert "server stream:8002 resolve;" in nginx
+    assert "proxy_pass http://stream_backend/;" in nginx
+    assert 'naive: "/naive"' in routes
+    assert 'stream: "/stream"' in routes
+    assert 'compare: "/compare"' in routes
+
+
 def test_app_stack_does_not_depend_on_comparison_state() -> None:
     script = (ROOT / "scripts" / "dev_stack.sh").read_text(encoding="utf-8")
 

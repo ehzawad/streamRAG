@@ -8,7 +8,7 @@ evidence.
 
 | Assessment requirement | Implementation | Current gate |
 |---|---|---|
-| Minimal full-stack UI | single-path UI on each API plus root `frontend/` with Naive, Stream, and Compare modes | headed Playwright, native Chrome, and Computer Use passed |
+| Minimal full-stack UI | one homepage with `/naive`, `/stream`, and `/compare`; each API also retains its direct developer UI | deep-link and browser verification |
 | Isolated Naive RAG | `naive/`: commit → exact committed-text retrieval → grounded answer | independently runnable on port 8001 |
 | Isolated typed StreamRAG | `stream/`: changed drafts → model/settled trigger → literal-exact reuse or committed-text fallback | independently runnable on port 8002 |
 | Removable frontend | `frontend/`: HTTP/SSE GUI only; no Python or benchmark ownership | APIs and CLI run without it |
@@ -25,7 +25,7 @@ evidence.
 | Performance | completions, failures, timeouts, throughput, retrieval/fallback/reuse | common and Stream-only metrics separated |
 | Non-blocking UX | async HTTP/OpenAI, Qdrant worker isolation, bounded snapshot queue, cancellable SSE | local boundary; not production-scale claim |
 | Reproducible handoff | committed corpus, checksum verifier, one real seed build, isolated clones, 5-dev smoke and 10-test final protocols | target 15–20 minutes; record observed time |
-| Security boundary | loopback-only, key remains server-side, no-auth threat model | public deployment unsupported |
+| Security boundary | one browser origin, internal API proxy, key remains server-side, no-auth threat model | public deployment requires an access layer |
 
 ## Evidence status
 

@@ -40,9 +40,6 @@ services:
   frontend:
     build:
       context: frontend
-      args:
-        VITE_NAIVE_API_URL: ${VITE_NAIVE_API_URL:-http://127.0.0.1:8001}
-        VITE_STREAM_API_URL: ${VITE_STREAM_API_URL:-http://127.0.0.1:8002}
     depends_on:
       - naive
       - stream

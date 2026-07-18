@@ -32,7 +32,7 @@ test("snapshot and commit requests target isolated services without a path field
     if (url.includes("/snapshots")) {
       return response({ turn_id: "stream-turn", revision: 2, events_url: "/events" }, 202);
     }
-    const implementation = url.includes(":8001") ? "naive" : "stream";
+    const implementation = url.includes("/api/naive/") ? "naive" : "stream";
     return response({
       run_id: `${implementation}-run`,
       turn_id: `${implementation}-turn`,
@@ -66,9 +66,9 @@ test("snapshot and commit requests target isolated services without a path field
     }),
   ]);
 
-  assert.match(requests[0].url, /^http:\/\/localhost:8002\/v1\/turns\/stream-turn\/snapshots$/);
-  assert.match(requests[1].url, /^http:\/\/localhost:8001\/v1\/turns\/naive-turn\/commit$/);
-  assert.match(requests[2].url, /^http:\/\/localhost:8002\/v1\/turns\/stream-turn\/commit$/);
+  assert.equal(requests[0].url, "/api/stream/v1/turns/stream-turn/snapshots");
+  assert.equal(requests[1].url, "/api/naive/v1/turns/naive-turn/commit");
+  assert.equal(requests[2].url, "/api/stream/v1/turns/stream-turn/commit");
   requests.forEach(({ body }) => assert.equal("path" in body, false));
   assert.equal(requests[1].body.query_time, requests[2].body.query_time);
 });
@@ -131,7 +131,7 @@ function health(implementation: "naive" | "stream") {
 test("topology validation checks service roles, metrics contract, and shared identity", async () => {
   globalThis.fetch = async (input) => {
     const url = String(input);
-    const implementation = url.includes(":8001") ? "naive" : "stream";
+    const implementation = url.includes("/api/naive/") ? "naive" : "stream";
     return response(url.endsWith("/v1/health") ? health(implementation) : dataStatus(implementation));
   };
 
@@ -145,7 +145,7 @@ test("topology validation checks service roles, metrics contract, and shared ide
 test("topology rejects a URL serving the wrong implementation role", async () => {
   globalThis.fetch = async (input) => {
     const url = String(input);
-    const expected = url.includes(":8001") ? "naive" : "stream";
+    const expected = url.includes("/api/naive/") ? "naive" : "stream";
     if (url.endsWith("/v1/health") && expected === "naive") {
       return response(health("stream"));
     }
@@ -161,7 +161,7 @@ test("topology rejects a URL serving the wrong implementation role", async () =>
 test("topology rejects an incompatible metrics contract", async () => {
   globalThis.fetch = async (input) => {
     const url = String(input);
-    const implementation = url.includes(":8001") ? "naive" : "stream";
+    const implementation = url.includes("/api/naive/") ? "naive" : "stream";
     if (url.endsWith("/v1/data/status") && implementation === "stream") {
       return response({ ...dataStatus("stream"), metrics_contract_version: 2 });
     }
@@ -187,7 +187,7 @@ test("comparison refuses services with different common identities", () => {
 test("comparison refuses the same process identity for both roles", async () => {
   globalThis.fetch = async (input) => {
     const url = String(input);
-    const implementation = url.includes(":8001") ? "naive" : "stream";
+    const implementation = url.includes("/api/naive/") ? "naive" : "stream";
     const body = url.endsWith("/v1/health")
       ? { ...health(implementation), instance_id: "shared-instance" }
       : dataStatus(implementation);
@@ -205,4 +205,31 @@ test("comparison refuses one resolved URL for both roles", () => {
     () => validateServiceIsolation(naive, stream, "http://localhost:8001/", "http://localhost:8001"),
     /distinct service URLs/,
   );
+});
+
+test("comparison accepts distinct same-origin proxy paths", () => {
+  const naive = { health: health("naive"), data: dataStatus("naive") };
+  const stream = { health: health("stream"), data: dataStatus("stream") };
+  assert.doesNotThrow(() =>
+    validateServiceIsolation(naive, stream, "/api/naive", "/api/stream"),
+  );
+});
+
+test("an isolated route probes only its selected service", async () => {
+  const requests: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    requests.push(url);
+    return response(url.endsWith("/v1/health") ? health("naive") : dataStatus("naive"));
+  };
+
+  const topology = await getServiceTopology(["naive"]);
+
+  assert.deepEqual(requests, [
+    "/api/naive/v1/health",
+    "/api/naive/v1/data/status",
+  ]);
+  assert.equal(topology.services.naive?.health.implementation, "naive");
+  assert.equal(topology.services.stream, undefined);
+  assert.equal(topology.comparisonError, null);
 });
