@@ -56,6 +56,18 @@ def test_each_service_has_its_own_entrypoint() -> None:
     assert naive_app is not stream_app
 
 
+def test_frontend_is_not_owned_by_the_comparison_package() -> None:
+    assert (ROOT / "frontend" / "package.json").is_file()
+    assert not (ROOT / "comparison" / "frontend").exists()
+
+
+def test_app_stack_does_not_depend_on_comparison_state() -> None:
+    script = (ROOT / "scripts" / "dev_stack.sh").read_text(encoding="utf-8")
+
+    assert "APP_STATE_ROOT" in script
+    assert "comparison/" not in script
+
+
 def run_with_blocked_imports(blocked: set[str], source: str) -> subprocess.CompletedProcess[str]:
     prelude = f"""
         import importlib.abc

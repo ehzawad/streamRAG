@@ -7,8 +7,9 @@ services:
       - path: .env
         required: false
     environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ALLOW_UNREVIEWED_DATASET: ${ALLOW_UNREVIEWED_DATASET:-0}
-      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       QDRANT_PATH: /app/var/qdrant
       RUNTIME_DB: /app/var/runtime.sqlite3
       METRICS_LOG: /app/var/requests.jsonl
@@ -25,8 +26,9 @@ services:
       - path: .env
         required: false
     environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ALLOW_UNREVIEWED_DATASET: ${ALLOW_UNREVIEWED_DATASET:-0}
-      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       QDRANT_PATH: /app/var/qdrant
       RUNTIME_DB: /app/var/runtime.sqlite3
       METRICS_LOG: /app/var/requests.jsonl
@@ -35,12 +37,12 @@ services:
     volumes:
       - stream-runtime:/app/var
 
-  comparison:
+  frontend:
     build:
-      context: comparison/frontend
+      context: frontend
       args:
-        VITE_NAIVE_API_URL: http://127.0.0.1:8001
-        VITE_STREAM_API_URL: http://127.0.0.1:8002
+        VITE_NAIVE_API_URL: ${VITE_NAIVE_API_URL:-http://127.0.0.1:8001}
+        VITE_STREAM_API_URL: ${VITE_STREAM_API_URL:-http://127.0.0.1:8002}
     depends_on:
       - naive
       - stream

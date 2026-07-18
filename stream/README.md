@@ -1,19 +1,16 @@
 # Typed StreamRAG
 
-`stream/` owns Path B. It accepts changed cumulative text-box snapshots before
-Send, runs the bounded low-reasoning trigger while intent evolves, and starts
-exact-draft retrieval after the most recently delivered draft remains unchanged
-for 500 ms. Evidence stays provisional and no answer can start before Send.
+`stream/` prepares evidence while the user types but answers only after Send.
 
-At commit, completed evidence is reusable only when its recorded source text is
-literally equal to the committed text. The path may await an already-running
-literal-exact retrieval; edits, mismatch, failure, or stale work take the same
-committed-text fallback used by Naive.
+Changed drafts pass through a bounded low-reasoning trigger. Retrieval may begin
+after the latest delivered draft has been unchanged for 500 ms. At Send,
+prepared evidence is reusable only when that draft exactly matches the committed
+text. Mismatch, failure, or stale work takes the same committed-text fallback as
+Naive. This is the main correctness boundary.
 
-The package imports `shared/` for the corpus/index, grounded answer agent, memory,
-HTTP lifecycle, metrics envelope, and capability-driven single-path UI. It never
-imports Naive or comparison code and remains an independently runnable full-stack
-StreamRAG experience when those directories are absent.
+The app uses `shared/` for common data, answer, API, memory, metric, and UI
+behavior. It never imports `naive/`, `frontend/`, or `comparison/` and runs
+without them.
 
 ## Run
 
@@ -25,22 +22,17 @@ METRICS_LOG=./var/stream/requests.jsonl \
 uv run uvicorn stream.api:app --host 127.0.0.1 --port 8002
 ```
 
-For a fresh state directory, build the real local index once:
+For fresh state, build the real local index once:
 
 ```bash
 curl --fail --request POST http://127.0.0.1:8002/v1/data/sync
 ```
 
-Open <http://127.0.0.1:8002> for the Stream UI and
-<http://127.0.0.1:8002/docs> for its API schema. The candidate override is for
-development only; omit it after the dataset becomes `approved_frozen`.
+Open <http://127.0.0.1:8002>; its schema is at
+<http://127.0.0.1:8002/docs>. `ALLOW_UNREVIEWED_DATASET` is development-only.
 
-## Metrics and tests
-
-Stream emits all common answer/citation, latency, reliability, usage, retrieval,
-accounting, and cost fields. It additionally owns controller attempts/timeouts,
-speculative and settled-draft retrievals, evidence lead/reuse/revalidation,
-stale discard, cancellation, and commit-fallback diagnostics.
+Stream reports the shared metrics plus controller, speculation, evidence lead
+and reuse, stale-work, cancellation, and fallback diagnostics.
 
 ```bash
 uv run pytest -q shared/tests stream/tests
