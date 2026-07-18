@@ -1,0 +1,125 @@
+Stream RAG paper: relevance to the Applied AI Engineer assessment
+=================================================================
+
+Decision
+--------
+KEEP. This is the primary paper for Path B. It defines the Stream RAG idea that
+the assessment explicitly asks us to apply and compare against Naive RAG.
+
+Direct evidence for a typed implementation
+------------------------------------------
+The paper states on page 1: "Stream RAG is modality-agnostic and can be applied
+equally to typed input."
+
+The assessment allows a spoken or streaming interface to start retrieval before
+the input is complete. Our interface will be typed, but genuinely streaming: the
+frontend will send cumulative text prefixes while the user types, before submit.
+This is stronger and closer to the paper than an ordinary submit-only text box.
+
+What transfers from the paper
+-----------------------------
+1. Partial observation
+   Retrieval decisions are made from an incomplete, evolving input rather than
+   waiting for the final query.
+
+2. Trigger
+   The paper's model-triggered route evaluates fixed blocks/snapshots with an
+   auxiliary model that either emits NO_QUERY or a new query. It does not equate
+   typed input with one model call per keystroke. Our training-free typed trigger
+   therefore applies deterministic word/time eligibility first, asks a small
+   structured model decision on bounded snapshots, and searches only when that
+   decision emits a new query. The paper's appendix reports roughly 4.7 trigger
+   model calls per utterance at a 500 ms interval; our call counts are measured
+   rather than assumed equivalent.
+
+3. Threads and cancellation
+   Speculative retrievals run asynchronously. To keep cost bounded, our small
+   implementation should allow at most one active/latest retrieval, cancel or
+   ignore stale work, and deduplicate identical normalized prefixes.
+
+4. Cache
+   Cache each completed speculative query and its ranked document/chunk IDs so
+   useful early work can be reused after the user submits.
+
+5. Reflector / final validation
+   The paper's fixed-interval design checks whether an early query would provide
+   results consistent with the final query. Our typed adaptation will validate
+   the most recent speculative result after submit. If it is not sufficient or
+   consistent, Path B falls back to retrieval with the complete query. Final
+   answer generation uses validated evidence, not an unverified partial result.
+
+6. Latency-accuracy-cost trade-off
+   Earlier triggers can hide more latency but can issue irrelevant or redundant
+   calls. Later triggers are safer but hide less. This is a central behavior to
+   expose in our benchmark and write-up.
+
+Evaluation nuance from the full paper
+-------------------------------------
+The paper does not establish that streaming retrieval is inherently more accurate
+than the same RAG pipeline. In its controlled sequential-RAG ablation, post-trained
+sequential RAG scores 34.9% and Stream RAG 34.2%, which the authors interpret as
+comparable correctness. The mechanism's isolated win is reduced user-perceived
+latency while preserving correctness. Larger accuracy improvements elsewhere in
+the report are primarily relative to closed-book/no-tool baselines.
+
+Our typed benchmark should therefore expect correctness parity as the safety
+target, latency improvement on questions whose tool intent stabilizes early, and
+extra trigger-call cost. An accuracy increase would be welcome evidence but is not
+required for the scheduling idea to be working.
+
+Concrete Path A versus Path B comparison
+----------------------------------------
+Path A - Naive RAG
+  Wait for submit -> embed/retrieve full query -> generate grounded answer.
+
+Path B - typed StreamRAG
+  Receive partial prefixes -> speculative retrieval before submit -> cache the
+  latest useful result -> validate/fallback on submit -> generate one grounded
+  streamed answer.
+
+For a fair comparison, both paths must use the same corpus, chunks, embedding
+model, vector index, top-k, final answer model, answer prompt, expected answers,
+and test queries. Their material difference should be retrieval scheduling and
+the additional StreamRAG safeguards.
+
+What not to copy from the paper
+-------------------------------
+- No microphone, ASR, TTS, audio blocks, or speech-in/speech-out model.
+- No post-training and no claim to reproduce the paper's trained model-triggered
+  policy. This project uses a zero-shot model-assisted typed controller whose
+  behavior and cost must be measured separately.
+- No unbounded set of parallel tool calls.
+- Do not claim the paper's AudioCRAG accuracy or latency gains as our results.
+- Do not start the factual final answer from an unvalidated partial query.
+
+Assessment measurements informed by the paper
+----------------------------------------------
+Required measures:
+- Speed: submit-to-first-token and submit-to-completion; also record retrieval
+  start/end timestamps to show how much work occurred before submit.
+- Cost: LLM/embedding tokens, estimated cost, total retrieval calls, cancelled
+  calls, and duplicate calls avoided.
+- Accuracy: score the same expected answers for both paths and record supporting
+  chunk/citation correctness.
+- Performance: throughput, failures, stale-result fallbacks, and per-query notes.
+
+Useful StreamRAG diagnostics (secondary to the required measures):
+- pre-submit retrieval time hidden;
+- speculative-result acceptance/reuse rate;
+- final-query fallback rate;
+- number of speculative calls per query.
+
+Scope and honesty note
+----------------------
+With a small local vector index, ANN is fast, but query planning and embedding can
+still overlap incoming typing. The observed latency benefit will remain
+query-dependent and may be negative when intent stabilizes late. We must report
+that honestly rather than introduce an artificial delay or select only winning
+questions. The implementation tests scheduling plus its correctness/cost boundary.
+
+Source
+------
+Stream RAG: Instant and Accurate Spoken Dialogue Systems with Streaming Tool
+Usage, Siddhant Arora et al. The full 31-page paper was reviewed. Relevant
+sections include the abstract, Sections 3.2 and 3.2.1, the sequential-RAG
+ablation, and the model-trigger/call-frequency appendix.

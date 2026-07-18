@@ -1,0 +1,266 @@
+{
+  "configuration": {
+    "embedding_model": "text-embedding-3-large",
+    "indexed_chunks": 1000,
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "medium",
+    "summary_reasoning_effort": "low",
+    "trigger_reasoning_effort": "low"
+  },
+  "cost_metric_status": "observed_lower_bound_non_final",
+  "integrity": {
+    "issues": [],
+    "status": "complete"
+  },
+  "measured_wall_s": 182.4207479953766,
+  "paired": {
+    "accuracy_pairs": {
+      "naive_only_correct": 0,
+      "same_outcome": 5,
+      "stream_only_correct": 0
+    },
+    "candidate_pairs": 5,
+    "completed_pairs": 5,
+    "cost_accounting_complete_pair_rate": 0.0,
+    "cost_accounting_complete_pairs": 0,
+    "mean_stream_minus_naive_accuracy": 0,
+    "mean_stream_minus_naive_calls": 2.6,
+    "mean_stream_minus_naive_cost_usd": null,
+    "median_stream_minus_naive_total_ms": -357.69104105234146,
+    "median_stream_minus_naive_ttft_ms": -335.9180410504341,
+    "median_stream_minus_naive_ttft_percent": -4.9328357180621385,
+    "p95_stream_minus_naive_ttft_ms": 2239.1289409399033,
+    "stream_ttft_win_rate": 0.6
+  },
+  "path_runs": 10,
+  "paths": {
+    "naive": {
+      "accounting_complete_outputs": 4,
+      "accounting_complete_rate": 0.8,
+      "answerable_abstention_rate": 0.0,
+      "citation_marker_rate": 1.0,
+      "cited_expected_answer_rate": 1.0,
+      "commit_fallback_rate": 0.0,
+      "completed": 5,
+      "completed_dynamic_tool_calls": 0,
+      "completion_rate": 1.0,
+      "cost_coverage": 1.0,
+      "cost_metric_status": "lower_bound_non_final",
+      "dynamic_tool_call_rate": 0.0,
+      "expected_answer_accuracy": 1.0,
+      "failures": 0,
+      "false_premise_rejection_rate": 1.0,
+      "fully_priced_output_rate": 0.8,
+      "inflight_postcommit_overlap_rate": 0.0,
+      "known_cache_hit_rate": 0.0,
+      "manual_adjudication": {
+        "adjudicated_outputs": 0,
+        "completed_outputs": 5,
+        "coverage": 0.0,
+        "labels": {
+          "acceptable": 0,
+          "incorrect": 0,
+          "missing": 0,
+          "perfect": 0
+        },
+        "perfect_or_acceptable_rate": null
+      },
+      "mean_calls": 1.8,
+      "mean_controller_calls": 1.0,
+      "mean_cost_usd": 0.013366366,
+      "mean_dynamic_tool_calls": 0.0,
+      "mean_input_tokens": 2051.2,
+      "mean_output_tokens": 103.6,
+      "mean_retrieval_calls": 1.0,
+      "mean_ttft_ms": 5303.548408436775,
+      "median_candidate_retrieval_lead_ms": 0.0,
+      "median_positive_retrieval_lead_ms": null,
+      "median_retrieval_lead_ms": 0.0,
+      "median_retrieval_ms": 1304.1767919785343,
+      "median_total_ms": 5943.863624989986,
+      "median_ttft_ms": 5342.212666988373,
+      "minimum_mean_cost_per_output_usd": 0.013366366,
+      "observed_cost_usd": 0.06683183,
+      "outputs": 5,
+      "p95_candidate_retrieval_lead_ms": 0.0,
+      "p95_total_ms": 7328.194291615486,
+      "p95_ttft_ms": 6599.1183416605,
+      "post_commit_throughput_queries_per_minute": 9.979399870826136,
+      "priced_outputs": 5,
+      "speculative_reuse_rate": 0.0,
+      "stdev_ttft_ms": 1076.2206690341582,
+      "support_evaluable_outputs": 5,
+      "supported_expected_answer_rate": 1.0,
+      "supporting_doc_citation_rate": 1.0,
+      "total_controller_calls": 5,
+      "total_dynamic_tool_calls": 0,
+      "total_model_api_calls": 9.0,
+      "total_retrieval_calls": 5,
+      "unique_queries": 5,
+      "unpriced_cancelled_controller_calls": 0,
+      "unpriced_cancelled_retrieval_calls": 0,
+      "unpriced_controller_failure_calls": 0,
+      "unpriced_controller_timeout_calls": 1,
+      "unpriced_endpoint_failure_calls": 0,
+      "unpriced_local_tool_calls": 0,
+      "unpriced_retrieval_failure_calls": 0,
+      "unpriced_retrieval_timeout_calls": 0
+    },
+    "stream": {
+      "accounting_complete_outputs": 0,
+      "accounting_complete_rate": 0.0,
+      "answerable_abstention_rate": 0.0,
+      "citation_marker_rate": 1.0,
+      "cited_expected_answer_rate": 1.0,
+      "commit_fallback_rate": 0.6,
+      "completed": 5,
+      "completed_dynamic_tool_calls": 0,
+      "completion_rate": 1.0,
+      "cost_coverage": 1.0,
+      "cost_metric_status": "lower_bound_non_final",
+      "dynamic_tool_call_rate": 0.0,
+      "expected_answer_accuracy": 1.0,
+      "failures": 0,
+      "false_premise_rejection_rate": 1.0,
+      "fully_priced_output_rate": 0.0,
+      "inflight_postcommit_overlap_rate": 0.4,
+      "known_cache_hit_rate": 0.0,
+      "manual_adjudication": {
+        "adjudicated_outputs": 0,
+        "completed_outputs": 5,
+        "coverage": 0.0,
+        "labels": {
+          "acceptable": 0,
+          "incorrect": 0,
+          "missing": 0,
+          "perfect": 0
+        },
+        "perfect_or_acceptable_rate": null
+      },
+      "mean_calls": 4.4,
+      "mean_controller_calls": 4.6,
+      "mean_cost_usd": 0.020354184,
+      "mean_dynamic_tool_calls": 0.0,
+      "mean_input_tokens": 2888.4,
+      "mean_output_tokens": 197.0,
+      "mean_retrieval_calls": 1.0,
+      "mean_ttft_ms": 5286.532150006295,
+      "median_candidate_retrieval_lead_ms": 0.0,
+      "median_positive_retrieval_lead_ms": null,
+      "median_retrieval_lead_ms": 0.0,
+      "median_retrieval_ms": 1514.229999971576,
+      "median_total_ms": 6912.746915996075,
+      "median_ttft_ms": 6275.535040974617,
+      "minimum_mean_cost_per_output_usd": 0.020354184,
+      "observed_cost_usd": 0.10177092,
+      "outputs": 5,
+      "p95_candidate_retrieval_lead_ms": 0.0,
+      "p95_total_ms": 7515.044858241082,
+      "p95_ttft_ms": 6704.6551332473755,
+      "post_commit_throughput_queries_per_minute": 10.140888576140284,
+      "priced_outputs": 5,
+      "speculative_reuse_rate": 0.0,
+      "stdev_ttft_ms": 1680.4161584551446,
+      "support_evaluable_outputs": 5,
+      "supported_expected_answer_rate": 1.0,
+      "supporting_doc_citation_rate": 1.0,
+      "total_controller_calls": 23,
+      "total_dynamic_tool_calls": 0,
+      "total_model_api_calls": 22.0,
+      "total_retrieval_calls": 5,
+      "unique_queries": 5,
+      "unpriced_cancelled_controller_calls": 5,
+      "unpriced_cancelled_retrieval_calls": 0,
+      "unpriced_controller_failure_calls": 0,
+      "unpriced_controller_timeout_calls": 1,
+      "unpriced_endpoint_failure_calls": 0,
+      "unpriced_local_tool_calls": 0,
+      "unpriced_retrieval_failure_calls": 0,
+      "unpriced_retrieval_timeout_calls": 0
+    }
+  },
+  "query_count": 5,
+  "schema_version": 1,
+  "stabilization_slices": {
+    "early_stabilization": {
+      "paired": {
+        "mean_stream_minus_naive_accuracy": 0,
+        "median_stream_minus_naive_total_ms": -2071.6872089505196,
+        "median_stream_minus_naive_ttft_ms": -2054.847416996956,
+        "median_stream_minus_naive_ttft_percent": -36.87721718876994,
+        "stream_ttft_win_rate": 1.0
+      },
+      "paths": {
+        "naive": {
+          "expected_answer_accuracy": 1.0,
+          "mean_cost_usd": 0.011766863333333334,
+          "median_total_ms": 6253.067458033562,
+          "median_ttft_ms": 5756.246208071709,
+          "supported_expected_answer_rate": 1.0
+        },
+        "stream": {
+          "expected_answer_accuracy": 1.0,
+          "mean_cost_usd": 0.02193348666666667,
+          "median_total_ms": 3960.081833958626,
+          "median_ttft_ms": 3633.5027920007706,
+          "supported_expected_answer_rate": 1.0
+        }
+      },
+      "query_count": 3
+    },
+    "late_stabilization": {
+      "paired": {
+        "mean_stream_minus_naive_accuracy": 0,
+        "median_stream_minus_naive_total_ms": 2262.0850819945335,
+        "median_stream_minus_naive_ttft_ms": 2255.7390409111977,
+        "median_stream_minus_naive_ttft_percent": 56.115759129956075,
+        "stream_ttft_win_rate": 0.0
+      },
+      "paths": {
+        "naive": {
+          "expected_answer_accuracy": 1.0,
+          "mean_cost_usd": 0.01475721,
+          "median_total_ms": 4650.661834001541,
+          "median_ttft_ms": 4019.7960000634193,
+          "supported_expected_answer_rate": 1.0
+        },
+        "stream": {
+          "expected_answer_accuracy": 1.0,
+          "mean_cost_usd": 0.01650747,
+          "median_total_ms": 6912.746915996075,
+          "median_ttft_ms": 6275.535040974617,
+          "supported_expected_answer_rate": 1.0
+        }
+      },
+      "query_count": 1
+    },
+    "revision_or_ambiguity": {
+      "paired": {
+        "mean_stream_minus_naive_accuracy": 0,
+        "median_stream_minus_naive_total_ms": 1995.6515830159187,
+        "median_stream_minus_naive_ttft_ms": 2172.6885410547256,
+        "median_stream_minus_naive_ttft_percent": 47.33886388133422,
+        "stream_ttft_win_rate": 0.0
+      },
+      "paths": {
+        "naive": {
+          "expected_answer_accuracy": 1.0,
+          "mean_cost_usd": 0.01677403,
+          "median_total_ms": 5588.333250045776,
+          "median_ttft_ms": 4589.650792002678,
+          "supported_expected_answer_rate": 1.0
+        },
+        "stream": {
+          "expected_answer_accuracy": 1.0,
+          "mean_cost_usd": 0.019462990000000003,
+          "median_total_ms": 7583.984833061695,
+          "median_ttft_ms": 6762.339333057404,
+          "supported_expected_answer_rate": 1.0
+        }
+      },
+      "query_count": 1
+    }
+  },
+  "status": "development_only_non_final",
+  "unseen_test_run": false
+}

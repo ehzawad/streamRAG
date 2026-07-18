@@ -1,0 +1,29 @@
+services:
+  api:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ALLOW_UNREVIEWED_DATASET: ${ALLOW_UNREVIEWED_DATASET:-0}
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      QDRANT_PATH: /app/var/qdrant
+      RUNTIME_DB: /app/var/runtime.sqlite3
+      METRICS_LOG: /app/var/requests.jsonl
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - runtime-data:/app/var
+
+  web:
+    build:
+      context: frontend
+      args:
+        VITE_API_URL: http://127.0.0.1:8000
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:5173:80"
+
+volumes:
+  runtime-data:

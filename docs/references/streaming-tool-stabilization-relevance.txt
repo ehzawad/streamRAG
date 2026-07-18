@@ -1,0 +1,115 @@
+Tool-intent stabilization paper: relevance to the assessment
+============================================================
+
+Decision
+--------
+KEEP as a secondary design and evaluation reference. It is not the source of the
+Stream RAG method; it analyzes when speculative retrieval from partial text can
+help, when it cannot, and how to measure the difference.
+
+Why it directly helps our typed StreamRAG choice
+-----------------------------------------------
+The paper explicitly analyzes input that ends when the user stops speaking or
+typing. Its central condition is that "the correct query becomes determinable
+before the user stops speaking or typing" (page 1).
+
+That is exactly the uncertainty created by our interface: we will retrieve from
+an evolving typed prefix before the full question is known.
+
+What it contributes beyond the primary Stream RAG paper
+-------------------------------------------------------
+1. Tool-intent stabilization
+   This is the point in a growing query where retrieval has found sufficient
+   evidence or has become consistent with full-query retrieval. It explains why
+   some questions benefit from early retrieval and others do not.
+
+2. The late-disambiguation failure case
+   If the decisive entity or constraint arrives near the end, early retrieval can
+   be wrong and provide little or no latency benefit. Our system therefore needs
+   final validation and fallback rather than blindly trusting the earliest call.
+
+3. A reason to avoid per-keystroke retrieval
+   Partial results can change as new words arrive. Minimum-prefix, debounce or
+   word-interval triggering, deduplication, caching, and stale-call cancellation
+   control wasted work.
+
+4. An honest explanation for mixed results
+   StreamRAG is query-dependent. A small benchmark should include questions that
+   stabilize early and questions whose meaning becomes clear late. StreamRAG is
+   not expected to win every query, which aligns with the assessment's demand to
+   explain trade-offs and failures.
+
+How to apply it to our fixed benchmark
+--------------------------------------
+Construct the expected answers first, then include both kinds of queries:
+
+Early-stabilizing examples
+- The key entity and task appear near the beginning.
+- A partial prefix is likely to retrieve the answer-bearing chunk.
+
+Late-stabilizing examples
+- A final entity, date, negation, comparison target, or other constraint changes
+  what evidence is relevant.
+- Early prefixes are deliberately ambiguous but the full question is answerable.
+
+For every test query, replay the same word prefixes through the same retriever and
+record:
+- earliest prefix where the expected answer-bearing chunk enters top-k;
+- whether that chunk remains available through the final prefix;
+- top-k overlap with full-query retrieval;
+- number of top-result changes;
+- speculative calls, cancellations, reuse and final fallback;
+- actual submit-to-first-token and total latency for both paths.
+
+These are diagnostic labels and metrics. The assessment's required headline
+comparison remains speed, cost, accuracy and overall performance on the identical
+fixed test set.
+
+Implementation decisions it supports
+------------------------------------
+- Use deterministic fixed/debounced eligibility plus a zero-shot structured
+  model decision, not a trained trigger.
+- Start only after a minimum meaningful prefix.
+- Keep the most recent useful completed retrieval in cache.
+- Cancel or ignore stale retrievals when the prefix changes materially.
+- On submit, validate the cached evidence against the complete query.
+- Fall back to complete-query retrieval whenever the cached result is uncertain.
+- Generate one final grounded response after validation.
+
+What not to import or claim
+---------------------------
+- Do not reproduce the paper's full CRAG prefix-sweep study.
+- Do not use its reported 73.9% streamable fraction as our expected result.
+- Do not treat top-result stability as proof that the result is correct; a wrong
+  document can remain stably wrong.
+- Do not claim its aggregate latency bound predicts individual queries.
+- Do not generalize its single English QA benchmark to our corpus without testing.
+- Do not add a learned trigger unless our own evidence justifies the complexity.
+
+Evidence-strength caveat
+------------------------
+This is a recent arXiv paper and should be cited as supporting analysis, not as the
+assignment's definition of StreamRAG. Its strongest value for us is experimental
+design: it prevents a cherry-picked benchmark and gives names to early stability,
+late disambiguation, speculative misfires and wasted calls.
+
+Observed development check
+--------------------------
+The five-question development run preserved answer/support correctness on both
+paths. Stream won all three candidate early-stabilization pairs with a median
+paired TTFT delta of -2,054.847 ms, but lost the single late-stabilization and
+single revision/ambiguity pairs. That small result supports the paper's diagnostic
+framing but is not a test-set conclusion; all 10 unseen queries remain frozen
+behind human approval.
+
+Relationship among the three documents
+--------------------------------------
+Assessment: defines what must be built and measured.
+Stream RAG paper: defines the primary Path B mechanism.
+Stabilization paper: explains when that mechanism helps and how to test it fairly.
+
+Source
+------
+When Does Streaming Tool Use Help? Characterizing Tool-Intent Stabilization in
+Streaming Retrieval-Augmented Generation, Elroy Galbraith, arXiv:2606.20113v2.
+Relevant pages: 1-8, especially Sections 3, 5.1, 5.3-5.5, and the limitations.

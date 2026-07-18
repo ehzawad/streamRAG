@@ -1,0 +1,197 @@
+{
+  "backend_instance_ids": {
+    "naive": "aeacf6c0-28c7-4bdb-adb2-e8424a0a75fc",
+    "stream": "579151e3-1075-417f-8218-14e0d9844ceb"
+  },
+  "benchmark_harness_sha256": {
+    "run_benchmark.py": "a5a9a07a8006251b5657f7edbc65e75cc32031d2d49ef2c88b57f737a7067d6e",
+    "typed_trace.py": "7e71e10291452d49c93c34e9727be9deceb6eac66ae9692aa177732baedd29f4"
+  },
+  "cache_isolation": "unique session scope per repetition/query/path; separate service processes",
+  "case_deadline_gate": {
+    "deadline_failures": 0,
+    "deadline_s": 45.0,
+    "status": "complete"
+  },
+  "case_deadline_s": 45.0,
+  "compared_status_fields": [
+    "indexed_chunks",
+    "indexed_desired_chunks",
+    "index_version",
+    "approval_status",
+    "dataset_checksums_valid",
+    "index_source_sha256",
+    "current_index_source_sha256",
+    "index_matches_current_corpus",
+    "backend_source_sha256",
+    "config_hash",
+    "dataset_checksum",
+    "serving_dataset_checksum",
+    "freeze_id",
+    "dataset_sha256",
+    "documents_sha256",
+    "index_checksum",
+    "model",
+    "embedding_model",
+    "reasoning_effort",
+    "trigger_reasoning_effort",
+    "summary_reasoning_effort",
+    "service_tier",
+    "index_pipeline_version"
+  ],
+  "completed_outputs": 10,
+  "completed_unix_s": 1784336529.3658319,
+  "created_unix_s": 1784336346.9450839,
+  "data_status": {
+    "naive": {
+      "approval_status": "candidate_pending_human_review",
+      "backend_source_sha256": "02eb65f3cfd79dbecf3730cf7f246093fa48416e5922a873249a64f6c1d8163c",
+      "config_hash": "394c7b516937e6ded35bec0547787047b76b3562ece7cfdcfc9fbaaa6cea68a0",
+      "current_index_source_sha256": "1c20c55d4ab58aa2c8621d60cae2d8dba5e41d0032a7218ac8ec0a19b64bfedf",
+      "dataset_checksum": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+      "dataset_checksum_error": null,
+      "dataset_checksums_valid": true,
+      "dataset_sha256": "bf4656aa04dc47706f2412f074c2e55582dd4b91522da3d45175ff1e4e0ebe99",
+      "dataset_verified_files": 9,
+      "documents_sha256": "0add526d0c4528c28a9eb61cab7523680d4ea931c27a671998e17ef42eed1c64",
+      "embedding_model": "text-embedding-3-large",
+      "freeze_id": "058ef3d4bb235f85341b4193cd677dabe7cabed8a749198e6ff58bb75ff779f5",
+      "index_checksum": "b3aebe0ddbc5df1778f4056169e1b604a69d93434b8369fb9fe7dc8e59621a8d",
+      "index_matches_current_corpus": true,
+      "index_pipeline_version": "typed-crag-dedup-chunk-payload-v2",
+      "index_source_sha256": "1c20c55d4ab58aa2c8621d60cae2d8dba5e41d0032a7218ac8ec0a19b64bfedf",
+      "index_version": 1,
+      "indexed_chunks": 1000,
+      "indexed_desired_chunks": 1000,
+      "instance_id": "aeacf6c0-28c7-4bdb-adb2-e8424a0a75fc",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "medium",
+      "service_tier": "default",
+      "serving_dataset_checksum": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+      "summary_reasoning_effort": "low",
+      "trigger_reasoning_effort": "low"
+    },
+    "stream": {
+      "approval_status": "candidate_pending_human_review",
+      "backend_source_sha256": "02eb65f3cfd79dbecf3730cf7f246093fa48416e5922a873249a64f6c1d8163c",
+      "config_hash": "394c7b516937e6ded35bec0547787047b76b3562ece7cfdcfc9fbaaa6cea68a0",
+      "current_index_source_sha256": "1c20c55d4ab58aa2c8621d60cae2d8dba5e41d0032a7218ac8ec0a19b64bfedf",
+      "dataset_checksum": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+      "dataset_checksum_error": null,
+      "dataset_checksums_valid": true,
+      "dataset_sha256": "bf4656aa04dc47706f2412f074c2e55582dd4b91522da3d45175ff1e4e0ebe99",
+      "dataset_verified_files": 9,
+      "documents_sha256": "0add526d0c4528c28a9eb61cab7523680d4ea931c27a671998e17ef42eed1c64",
+      "embedding_model": "text-embedding-3-large",
+      "freeze_id": "058ef3d4bb235f85341b4193cd677dabe7cabed8a749198e6ff58bb75ff779f5",
+      "index_checksum": "b3aebe0ddbc5df1778f4056169e1b604a69d93434b8369fb9fe7dc8e59621a8d",
+      "index_matches_current_corpus": true,
+      "index_pipeline_version": "typed-crag-dedup-chunk-payload-v2",
+      "index_source_sha256": "1c20c55d4ab58aa2c8621d60cae2d8dba5e41d0032a7218ac8ec0a19b64bfedf",
+      "index_version": 1,
+      "indexed_chunks": 1000,
+      "indexed_desired_chunks": 1000,
+      "instance_id": "579151e3-1075-417f-8218-14e0d9844ceb",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "medium",
+      "service_tier": "default",
+      "serving_dataset_checksum": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+      "summary_reasoning_effort": "low",
+      "trigger_reasoning_effort": "low"
+    }
+  },
+  "deadline_failures": 0,
+  "distinct_backend_instances": true,
+  "distinct_service_urls": true,
+  "evaluation_manifest_sha256": "",
+  "failures": 0,
+  "finalized": true,
+  "freeze_id": "",
+  "max_typing_drift_ms": 100.0,
+  "path_urls": {
+    "naive": "http://localhost:8001",
+    "stream": "http://localhost:8002"
+  },
+  "prediction_rows_expected": 10,
+  "prediction_rows_observed": 10,
+  "predictions": "predictions.jsonl",
+  "predictions_sha256": "77506ddb360b03a28ada2ad18a209a573c679af607b41ccaf6a16020364674c9",
+  "preregistered_protocol_gate": {
+    "required_measured_repetitions": 1,
+    "required_query_count": 10,
+    "required_total_path_runs": 20,
+    "required_warmup_repetitions": 0,
+    "status": "missing_or_incomplete"
+  },
+  "queries": "../../../data/crag_eval/dev_queries.jsonl",
+  "queries_sha256": "d32446a7e15fd73a39b181b1af22beeaa917d8f19c437b335c4575450998ec24",
+  "query_count": 5,
+  "query_ids": [
+    "crag-text-dev-001",
+    "crag-text-dev-002",
+    "crag-text-dev-003",
+    "crag-text-dev-004",
+    "crag-text-dev-005"
+  ],
+  "query_selection": {
+    "method": "ordered_prefix",
+    "selected_query_count": 5,
+    "source_query_count": 5
+  },
+  "repetitions": 1,
+  "reportable": false,
+  "run_status": "completed_non_reportable",
+  "run_tag": "5fd3adbd14",
+  "schema_version": 4,
+  "scorer_isolation": {
+    "binding": "query SHA-256 plus opaque evaluation freeze_id",
+    "runner_gold_access": "forbidden"
+  },
+  "serving_checksum_manifest": "../../../data/crag_eval/checksums.sha256",
+  "serving_checksum_manifest_sha256": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+  "smoke_non_reportable": true,
+  "snapshot_transport_gate": {
+    "async_sends_do_not_delay_commit": true,
+    "errors": 0,
+    "status": "complete"
+  },
+  "text_input_contract": {
+    "commit": "full text is carried only by the higher-revision Send payload",
+    "excluded": [
+      "ASR latency",
+      "endpoint detection",
+      "trailing silence"
+    ],
+    "sampling_boundary": "ticks strictly before deterministic Send time",
+    "server_trigger_interval_ms": 500,
+    "snapshot_transport": "asynchronous requests never delay the planned Send boundary; unfinished or failed sends make the run non-reportable",
+    "snapshots": "400 ms cumulative dirty-text samples, including partial words",
+    "trigger_min_words": 5,
+    "ui_snapshot_sampling_ms": 400
+  },
+  "timing_drift_gate": {
+    "max_allowed_abs_drift_ms": 100.0,
+    "max_observed_abs_drift_ms": 2.224993688720133,
+    "observations": 10,
+    "status": "complete",
+    "violations": 0
+  },
+  "turn_cleanup_gate": {
+    "cleanup_failures": 0,
+    "failure_turns_require_bounded_delete": true,
+    "status": "complete"
+  },
+  "warmup_failures": 0,
+  "warmup_gate": {
+    "cleanup_failures": 0,
+    "failures": 0,
+    "outputs_completed": 0,
+    "outputs_expected": 0,
+    "retained_in_predictions": false,
+    "status": "complete"
+  },
+  "warmup_outputs_completed": 0,
+  "warmup_outputs_expected": 0,
+  "warmup_repetitions": 0,
+  "words_per_minute": 70.0
+}
