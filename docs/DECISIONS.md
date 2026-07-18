@@ -157,6 +157,4 @@ claimed.
 
 ## References
 
-- [`Applied_AI_Engineer_Assessment.pdf`](references/Applied_AI_Engineer_Assessment.pdf)
-- [`18954_Stream_RAG_Instant_and_A.pdf`](references/18954_Stream_RAG_Instant_and_A.pdf)
 - [CRAG repository and license](https://github.com/facebookresearch/CRAG)
