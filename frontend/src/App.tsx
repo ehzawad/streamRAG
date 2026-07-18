@@ -11,6 +11,7 @@ import {
   subscribe,
 } from "./api";
 import {
+  isRunTransportTerminal,
   isUserVisibleRunComplete,
   recordUserVisibleTerminal,
   type AnswerPath,
@@ -32,6 +33,7 @@ type Panel = {
   retrievalCalls: number | null;
   toolCalls: number | null;
   fallbacks: number | null;
+  persistenceStatus: string | null;
 };
 
 type SnapshotJob = {
@@ -59,6 +61,7 @@ const emptyPanel = (status: string): Panel => ({
   retrievalCalls: null,
   toolCalls: null,
   fallbacks: null,
+  persistenceStatus: null,
 });
 
 const initialPanels = (mode: PathName): Record<"naive" | "stream", Panel> => ({
@@ -89,7 +92,8 @@ export default function App() {
   const runAbort = useRef(new AbortController());
   const snapshotEpoch = useRef(0);
   const turnEvents = useRef<EventSource | null>(null);
-  const runEvents = useRef<EventSource | null>(null);
+  const runEvents = useRef<Set<EventSource>>(new Set());
+  const displayedRunId = useRef<string | null>(null);
 
   useEffect(() => {
     snapshotAbort.current = new AbortController();
@@ -100,7 +104,7 @@ export default function App() {
         setReady(isReady);
         setHealth(
           isReady
-            ? `${value.model} · answer ${value.reasoning_effort} / trigger ${value.trigger_reasoning_effort} · ${value.indexed_chunks} chunks`
+            ? `${value.model} · answer ${value.reasoning_effort} / trigger ${value.trigger_reasoning_effort} · ${value.indexed_chunks} chunks · settled prefetch ${value.settled_draft_delay_ms} ms`
             : `${value.dataset_status} · index missing, stale, or checksum-invalid`,
         );
       })
@@ -112,7 +116,8 @@ export default function App() {
       runAbort.current.abort();
       queuedSnapshot.current = null;
       turnEvents.current?.close();
-      runEvents.current?.close();
+      runEvents.current.forEach((source) => source.close());
+      runEvents.current.clear();
       turnId.current = crypto.randomUUID();
       sessionId.current = crypto.randomUUID();
       if (turnOpened.current) {
@@ -129,6 +134,16 @@ export default function App() {
         ...current,
         stream: { ...current.stream, status: `${event.action}${event.query ? `: ${event.query}` : ""}` },
       }));
+    } else if (event.type === "draft.settled") {
+      setPanels((current) => ({
+        ...current,
+        stream: {
+          ...current.stream,
+          status: event.state === "ready"
+            ? "Exact draft evidence ready — press Send for the grounded answer."
+            : "Draft settled; retrieving exact text before Send…",
+        },
+      }));
     } else if (event.type === "retrieval.started") {
       setPanels((current) => ({
         ...current,
@@ -144,7 +159,9 @@ export default function App() {
         ...current,
         stream: {
           ...current.stream,
-          status: event.candidate
+          status: event.commit_safe_exact
+            ? "Exact draft evidence ready — press Send for the grounded answer."
+            : event.candidate
             ? "Candidate evidence ready; validating intent…"
             : "Evidence ready before submit.",
         },
@@ -186,13 +203,24 @@ export default function App() {
     log(event);
     if (!event.path) {
       if (event.type === "run.error") {
+        if (isUserVisibleRunComplete(mode, userVisibleTerminalPaths.current)) {
+          setHealth(event.message || "Post-answer finalization failed");
+          setPanels((current) => ({
+            naive: current.naive.persistenceStatus === "pending"
+              ? { ...current.naive, persistenceStatus: "failed" }
+              : current.naive,
+            stream: current.stream.persistenceStatus === "pending"
+              ? { ...current.stream, persistenceStatus: "failed" }
+              : current.stream,
+          }));
+          return;
+        }
         const abandonedTurnId = turnId.current;
         setRunning(false);
         setHealth(event.message || "Run failed");
         turnEvents.current?.close();
-        runEvents.current?.close();
         turnEvents.current = null;
-        runEvents.current = null;
+        displayedRunId.current = null;
         snapshotAbort.current.abort();
         snapshotAbort.current = new AbortController();
         runAbort.current.abort();
@@ -246,6 +274,7 @@ export default function App() {
             retrievalCalls: event.retrieval?.calls ?? null,
             toolCalls: event.tool_traces?.length ?? null,
             fallbacks: event.reuse?.commit_fallbacks ?? null,
+            persistenceStatus: "pending",
           },
         };
       }
@@ -272,11 +301,18 @@ export default function App() {
             retrievalCalls: event.retrieval?.calls ?? null,
             toolCalls: event.tool_traces?.length ?? null,
             fallbacks: event.reuse?.commit_fallbacks ?? null,
+            persistenceStatus:
+              event.persistence?.status ?? panel.persistenceStatus,
           },
         };
       }
       if (event.type === "answer.error") {
-        if (wasUserVisibleTerminal) return current;
+        if (wasUserVisibleTerminal) {
+          return {
+            ...current,
+            [path]: { ...panel, persistenceStatus: "failed" },
+          };
+        }
         return {
           ...current,
           [path]: { ...panel, status: event.message || "Path failed" },
@@ -288,9 +324,7 @@ export default function App() {
       if (isUserVisibleRunComplete(mode, userVisibleTerminalPaths.current)) {
         setRunning(false);
         turnEvents.current?.close();
-        runEvents.current?.close();
         turnEvents.current = null;
-        runEvents.current = null;
         turnId.current = crypto.randomUUID();
         if (mode === "compare") sessionId.current = crypto.randomUUID();
         turnOpened.current = false;
@@ -403,6 +437,7 @@ export default function App() {
   async function submit() {
     if (!query.trim() || running) return;
     setRunning(true);
+    displayedRunId.current = null;
     userVisibleTerminalPaths.current.clear();
     setTrace([]);
     setPanels({
@@ -430,20 +465,37 @@ export default function App() {
         text: query.trim(),
         signal: runAbort.current.signal,
       });
-      runEvents.current?.close();
-      runEvents.current = subscribe(
+      displayedRunId.current = accepted.run_id;
+      let source: EventSource;
+      let transportTerminal = false;
+      source = subscribe(
         accepted.events_url,
-        handleRunEvent,
-        () => setHealth("Answer event stream interrupted; reconnecting…"),
+        (event) => {
+          if (displayedRunId.current === accepted.run_id) handleRunEvent(event);
+          if (isRunTransportTerminal(event)) {
+            transportTerminal = true;
+            source.close();
+            runEvents.current.delete(source);
+          }
+        },
+        () => {
+          if (transportTerminal) return;
+          if (displayedRunId.current === accepted.run_id) {
+            setHealth("Answer event stream interrupted; reconnecting…");
+          } else {
+            source.close();
+            runEvents.current.delete(source);
+          }
+        },
       );
+      runEvents.current.add(source);
     } catch (error) {
       const abandonedTurnId = turnId.current;
       setRunning(false);
       setHealth(error instanceof Error ? error.message : "Request failed");
       turnEvents.current?.close();
-      runEvents.current?.close();
       turnEvents.current = null;
-      runEvents.current = null;
+      displayedRunId.current = null;
       snapshotAbort.current.abort();
       snapshotAbort.current = new AbortController();
       runAbort.current.abort();
@@ -465,9 +517,8 @@ export default function App() {
     window.clearInterval(timer.current);
     timer.current = undefined;
     turnEvents.current?.close();
-    runEvents.current?.close();
     turnEvents.current = null;
-    runEvents.current = null;
+    displayedRunId.current = null;
     snapshotEpoch.current += 1;
     snapshotAbort.current.abort();
     snapshotAbort.current = new AbortController();
@@ -493,6 +544,7 @@ export default function App() {
     const abandonedTurnId = turnId.current;
     window.clearInterval(timer.current);
     timer.current = undefined;
+    displayedRunId.current = null;
     snapshotEpoch.current += 1;
     snapshotAbort.current.abort();
     snapshotAbort.current = new AbortController();
@@ -520,8 +572,9 @@ export default function App() {
           <p className="eyebrow">Applied AI Engineer assessment</p>
           <h1>Naive RAG vs typed StreamRAG</h1>
           <p className="subhead">
-            Same answer model, corpus, retriever, endpoint controller, and prompt. Each path has
-            isolated conversation state and a path-scoped retrieval cache.
+            Same answer model, prompt, corpus, and exact committed-text fallback retrieval.
+            StreamRAG alone can trigger speculative retrieval while you type; answers still wait
+            for Send. Each path has isolated state and a path-scoped cache.
           </p>
         </div>
         <span className={`health ${ready ? "ok" : "warn"}`}>{health}</span>
@@ -582,7 +635,7 @@ function CompareSummary({ naive, stream }: { naive: Panel; stream: Panel }) {
       <div>
         <strong>Live diagnostic, not an accuracy score.</strong>
         <span>
-          The isolated paths run concurrently in this view. Inspect both answers and citations;
+          The isolated paths run concurrently in this view. Inspect both answers and retrieved evidence;
           reportable latency and correctness must come from an independent benchmark after the
           evaluation dataset is approved and frozen.
         </span>
@@ -592,7 +645,7 @@ function CompareSummary({ naive, stream }: { naive: Panel; stream: Panel }) {
           <Delta label="TTFT" value={difference(stream.firstToken, naive.firstToken, "ms")} />
           <Delta label="Total" value={difference(stream.total, naive.total, "ms")} />
           <Delta label="Cost" value={costDifference(stream, naive)} />
-          <Delta label="Citations" value={signed(uniqueSourceCount(stream.sources) - uniqueSourceCount(naive.sources))} />
+          <Delta label="Evidence docs" value={signed(uniqueSourceCount(stream.sources) - uniqueSourceCount(naive.sources))} />
           <Delta label="Calls" value={difference(streamCalls, naiveCalls)} />
         </div>
       )}
@@ -618,7 +671,8 @@ function Panel({ path, title, tone, panel }: { path: "naive" | "stream"; title: 
         <Metric label="Retrieval-ready lead" value={panel.candidateRetrievalLead == null ? "—" : `${panel.candidateRetrievalLead.toFixed(0)} ms`} />
         <Metric label="Evidence" value={evidenceLabel(path, panel)} />
         <Metric label="Path cache" value={panel.cacheHit == null ? "—" : panel.cacheHit ? "Hit" : "Miss"} />
-        <Metric label="Citations" value={panel.status === "Complete" ? String(visibleSources.length) : "—"} />
+        <Metric label="Evidence docs" value={panel.status === "Complete" ? String(visibleSources.length) : "—"} />
+        <Metric label="Persistence" value={persistenceLabel(panel.persistenceStatus)} />
         <Metric label="Calls · ctl / ret / tool" value={callBreakdown(panel)} />
         <Metric label="Send fallbacks" value={panel.fallbacks == null ? "—" : String(panel.fallbacks)} />
       </div>
@@ -644,6 +698,14 @@ function uniqueSourceCount(sources: Source[]) {
   return new Set(sources.map((source) => source.url || source.chunk_id)).size;
 }
 
+function persistenceLabel(status: string | null) {
+  if (status === "pending") return "Finalizing…";
+  if (status === "completed") return "Saved";
+  if (status === "timeout") return "Timed out";
+  if (status === "failed") return "Failed";
+  return "—";
+}
+
 function totalCalls(panel: Panel) {
   const calls = [panel.controllerCalls, panel.retrievalCalls, panel.toolCalls];
   return calls.every((value) => value === null)
@@ -663,7 +725,7 @@ function evidenceLabel(path: "naive" | "stream", panel: Panel) {
   if (panel.reuseMode === "precommit_revalidated") return "Revalidated";
   if (panel.reuseMode === "presubmit_retrieval_revalidated_at_commit") return "Prefetched · checked at Send";
   if (panel.reuseMode === "inflight_completed_postcommit") return "In-flight overlap";
-  if (panel.reuseMode === "commit_endpoint") {
+  if (panel.reuseMode === "committed_text_retrieval") {
     return path === "stream" && panel.fallbacks ? "Send fallback" : "At Send";
   }
   return "—";

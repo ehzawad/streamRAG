@@ -109,8 +109,7 @@ def prepare_bundle(evaluation_dir: Path, output_dir: Path) -> dict[str, str | in
             encoding="utf-8",
         )
         checksums = {
-            name: sha256_file(stage / name)
-            for name in (*bundle_files, "inference_bundle.json")
+            name: sha256_file(stage / name) for name in (*bundle_files, "inference_bundle.json")
         }
         (stage / "checksums.sha256").write_text(
             "".join(f"{digest}  {name}\n" for name, digest in sorted(checksums.items())),

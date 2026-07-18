@@ -33,7 +33,7 @@ cleaner standalone query. Set it false when there is no candidate or when a new
 entity, relation, date, location, number, negation, or comparison makes it unsafe.
 
 Precision rules:
-- Optimize recall before commit: some discarded retrieval is acceptable. Wait only
+- Optimize recall while typing: some discarded retrieval is acceptable. Wait only
   while the entity/object or requested property/relation is too ambiguous to target
   answer-bearing evidence.
 - Never invent missing entities, dates, constraints, or user intent.
@@ -45,7 +45,6 @@ Precision rules:
 - Treat output-format or explanation instructions as non-retrieval-changing when
   the existing query already targets the same answer-bearing evidence.
 - If the draft materially corrects the entity or intent, retrieve a corrected query.
-- At commit, do not wait for a complete factual question; retrieve if corpus evidence could help.
 """
 
 
@@ -58,11 +57,7 @@ def bounded_retrieval_query(draft: str) -> str:
     remaining = RETRIEVAL_QUERY_MAX_CHARS - len(separator)
     prefix_chars = remaining // 2
     suffix_chars = remaining - prefix_chars
-    return (
-        f"{query[:prefix_chars].rstrip()}"
-        f"{separator}"
-        f"{query[-suffix_chars:].lstrip()}"
-    )
+    return f"{query[:prefix_chars].rstrip()}{separator}{query[-suffix_chars:].lstrip()}"
 
 
 class ModelTrigger:
@@ -97,24 +92,16 @@ class ModelTrigger:
         draft: str,
         previous_query: str | None,
         conversation_context: str,
-        is_commit: bool,
     ) -> TriggerResult:
         started = time.perf_counter()
         result = await self.agent.run(
             "Cumulative draft:\n"
             f"{draft}\n\nReusable candidate query: {previous_query or '(none)'}\n"
             f"Recent conversation (may resolve follow-up references):\n"
-            f"{conversation_context or '(none)'}\n"
-            f"Input committed: {is_commit}",
+            f"{conversation_context or '(none)'}",
             usage_limits=UsageLimits(request_limit=1, output_tokens_limit=120),
         )
         decision = result.output
-        # A commit cannot be stranded by a wait decision when no usable evidence exists.
-        if is_commit and decision.action == "wait":
-            decision = TriggerDecision(
-                action="retrieve",
-                retrieval_query=bounded_retrieval_query(draft),
-            )
         return TriggerResult(
             decision=decision,
             usage=pydantic_usage(result.usage, "trigger"),

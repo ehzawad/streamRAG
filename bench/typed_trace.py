@@ -32,13 +32,13 @@ def cumulative_typed_trace(
     text: str,
     words_per_minute: float,
     snapshot_interval_ms: int = SNAPSHOT_INTERVAL_MS,
+    post_typing_dwell_ms: float = 0.0,
 ) -> list[TypedSnapshot]:
-    """Create cumulative dirty-text samples strictly before immediate Send.
+    """Create cumulative dirty-text samples strictly before Send.
 
     Characters arrive uniformly under the standard five-character WPM convention.
-    A user who presses Send as soon as typing finishes cancels the next UI timer, so
-    the full query exists only in the commit payload unless it was sampled earlier.
-    This function deliberately does not manufacture an exact-query snapshot at Send.
+    During an optional post-typing pause, the next UI timer can observe the complete
+    draft. Send still carries a higher revision and remains the only commit boundary.
     """
 
     normalized = text.strip()
@@ -46,12 +46,15 @@ def cumulative_typed_trace(
         raise ValueError("typed trace text is empty")
     if snapshot_interval_ms <= 0:
         raise ValueError("snapshot_interval_ms must be positive")
+    if post_typing_dwell_ms < 0:
+        raise ValueError("post_typing_dwell_ms must be non-negative")
     character_interval_ms = 60_000 / (words_per_minute * STANDARD_WORD_CHARACTERS)
     duration_ms = typing_duration_ms(normalized, words_per_minute)
+    send_ms = duration_ms + post_typing_dwell_ms
     snapshots: list[TypedSnapshot] = []
     planned_ms = float(snapshot_interval_ms)
     last_text = ""
-    while planned_ms < duration_ms:
+    while planned_ms < send_ms:
         character_count = min(
             len(normalized),
             max(1, math.floor(planned_ms / character_interval_ms) + 1),
@@ -64,7 +67,7 @@ def cumulative_typed_trace(
                     text=prefix,
                     character_count=character_count,
                     word_count=len(prefix.split()),
-                    is_final=False,
+                    is_final=prefix == normalized,
                 )
             )
             last_text = prefix

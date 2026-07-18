@@ -56,6 +56,8 @@ async def test_long_history_compacts_and_persists_without_tool_evidence(tmp_path
     result = await skill.compact(memory)
 
     assert result.compressed is True
+    assert result.accounting_complete is True
+    assert result.unpriced_timeout_calls == 0
     assert result.memory.summary.startswith("The user is tracking Project Atlas")
     assert result.memory.compression_calls == 1
     assert [message_text(message) for message in result.memory.messages] == [
@@ -101,6 +103,8 @@ async def test_summary_timeout_preserves_full_memory() -> None:
 
     assert result.compressed is False
     assert result.memory is memory
+    assert result.accounting_complete is False
+    assert result.unpriced_timeout_calls == 1
 
 
 @pytest.mark.asyncio

@@ -29,9 +29,9 @@ What it contributes beyond the primary Stream RAG paper
    final validation and fallback rather than blindly trusting the earliest call.
 
 3. A reason to avoid per-keystroke retrieval
-   Partial results can change as new words arrive. Minimum-prefix, debounce or
-   word-interval triggering, deduplication, caching, and stale-call cancellation
-   control wasted work.
+   Partial results can change as new words arrive. Changed-only snapshots,
+   meaningful-prefix model triggering, a server-owned quiet timer, and stale-call
+   cancellation control wasted work.
 
 4. An honest explanation for mixed results
    StreamRAG is query-dependent. A small benchmark should include questions that
@@ -67,15 +67,18 @@ fixed test set.
 
 Implementation decisions it supports
 ------------------------------------
-- Use deterministic fixed/debounced meaningful-prefix eligibility to start at
-  most one quarantined raw retrieval alongside a zero-shot structured model
-  decision, not a trained trigger.
-- Start only after a minimum meaningful prefix.
-- Keep the most recent useful completed retrieval in cache.
-- Cancel or ignore stale retrievals when the prefix changes materially.
-- On submit, validate the cached evidence against the complete query.
-- Fall back to complete-query retrieval whenever the cached result is uncertain.
-- Generate one final grounded response after validation.
+- Use bounded meaningful-prefix eligibility and a zero-shot structured model
+  decision for evolving changed drafts, not a trained trigger.
+- After one delivered draft remains unchanged for 500 ms, start deterministic
+  retrieval with that exact text.
+- Keep at most one active speculative retrieval and cancel stale work after a
+  correction or replacement query.
+- At Send, accept only completed or in-flight retrieval whose recorded source text
+  literally equals the committed text.
+- Use bounded exact committed-text retrieval for any mismatch, change, or failed
+  exact in-flight retrieval.
+- Generate one final grounded response after Send; never expose a provisional
+  answer while the user is typing.
 
 What not to import or claim
 ---------------------------
@@ -96,14 +99,12 @@ late disambiguation, speculative misfires and wasted calls.
 
 Observed development check
 --------------------------
-The retained five-question development run preserved answer/support correctness on
-both paths. Stream won all three candidate early-stabilization pairs with a median
-paired TTFT delta of -3,104.281 ms. It lost the single late-stabilization pair by
-+464.497 ms and won the single revision/ambiguity pair by -478.590 ms. The latter
-two slices each contain only one item, and all accepted evidence lead-at-commit
-values were zero, so this small live result neither proves the labels nor a causal
-or universal speedup. It is not a test-set conclusion; all 10 unseen queries remain
-sealed behind human approval.
+The retained five-question development run preserved the automatic answer/support/
+citation proxies on both paths and showed mixed early/late latency behavior. Exact
+metrics live only in the canonical benchmark report and generated summary so this
+interpretation note cannot become a second stale result sheet. The small run does
+not prove the labels or a causal or universal speedup. It is not a test-set
+conclusion; all 10 unseen queries remain sealed behind human approval.
 
 Relationship among the three documents
 --------------------------------------

@@ -12,7 +12,6 @@ class SnapshotRequest(BaseModel):
     path: Literal["stream", "compare"]
     revision: int = Field(ge=1)
     text: str = Field(min_length=1, max_length=20_000)
-    client_ts_ms: float | None = None
 
 
 class CommitRequest(BaseModel):
@@ -21,7 +20,6 @@ class CommitRequest(BaseModel):
     revision: int = Field(ge=1)
     text: str = Field(min_length=1, max_length=20_000)
     query_time: str = Field(default="", max_length=128)
-    client_ts_ms: float | None = None
 
 
 class CommitAccepted(BaseModel):

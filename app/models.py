@@ -12,7 +12,6 @@ class InputSnapshot(BaseModel):
     turn_id: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=0)
     text: str = Field(max_length=20_000)
-    client_ts_ms: float | None = None
 
 
 class TriggerDecision(BaseModel):

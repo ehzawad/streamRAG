@@ -14,9 +14,8 @@ def responses_model(
 ) -> tuple[OpenAIResponsesModel, AsyncOpenAI]:
     client = AsyncOpenAI(
         timeout=timeout_s,
-        # The application owns a hard deadline and role-specific fallback for
-        # every model call. SDK retries would otherwise outlive or be cancelled
-        # by that outer budget, so only embeddings retain transport retries.
+        # Application-owned hard deadlines make hidden SDK retries impossible to
+        # attribute precisely, so each measured call is one transport attempt.
         max_retries=0,
     )
     model = OpenAIResponsesModel(

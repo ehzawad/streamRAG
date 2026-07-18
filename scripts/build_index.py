@@ -9,11 +9,12 @@ from app.config import settings
 from app.data.crag import (
     chunk_documents,
     deduplicate_documents,
-    load_documents,
-    require_dataset_approval,
+    load_snapshot_documents,
+    require_dataset_snapshot,
 )
 from app.data.index_state import IndexStateRepository
 from app.data.vector_store import QdrantVectorStore
+from app.fingerprints import index_source_sha256_for_documents
 from app.rag.embeddings import OpenAIEmbedder
 
 
@@ -25,8 +26,8 @@ async def run() -> None:
     if not 1 <= args.batch_size <= 512:
         parser.error("--batch-size must be between 1 and 512")
     allow = settings.allow_unreviewed_dataset or args.allow_unreviewed
-    status = require_dataset_approval(settings.dataset_dir, allow)
-    documents = deduplicate_documents(load_documents(settings.dataset_dir))
+    snapshot = require_dataset_snapshot(settings.dataset_dir, allow)
+    documents = deduplicate_documents(load_snapshot_documents(snapshot))
     chunks = chunk_documents(documents, settings.chunk_tokens, settings.chunk_overlap)
     embedder = OpenAIEmbedder(
         settings.embedding_model,
@@ -40,12 +41,19 @@ async def run() -> None:
     )
     await store.setup()
     try:
-        report = await store.sync(chunks, batch_size=args.batch_size)
+        report = await store.sync(
+            chunks,
+            index_source=index_source_sha256_for_documents(
+                settings,
+                snapshot.documents_sha256,
+            ),
+            batch_size=args.batch_size,
+        )
     finally:
         await store.close()
     result = {
         **report.__dict__,
-        "dataset_approval_status": status,
+        "dataset_approval_status": snapshot.approval_status,
         "unique_documents": len(documents),
         "estimated_embedding_cost_usd": round(
             report.embedding_tokens / 1_000_000 * settings.embedding_input_per_million, 6

@@ -16,12 +16,14 @@ the assignment runtime budget; no page is cut. The resulting
 1,000-point embedded-Qdrant target and require no Qdrant API key.
 
 The construction is text-specific: approximate standard five-character WPM typing,
-sample cumulative dirty text every 400 ms (partial words included) only at ticks strictly
-before **Send**, carry full text in the higher-revision commit, and exclude speech-only
-latency gains.
+sample changed-only cumulative dirty text every 400 ms (partial words included) at ticks
+strictly before **Send**, emit no snapshot for unchanged ticks, start exact speculative
+retrieval after the latest delivered draft remains unchanged for 500 ms, carry full text
+in the higher-revision commit, and exclude speech-only latency gains. The quiet-period
+retrieval cannot generate an answer; only **Send** can do that.
 
-The official Task 1/2 release contains up to five pages per query. Therefore this script's
-global aggregate is larger and more distractor-rich than CRAG-200, but it does **not**
+The official Task 1/2 release contains up to five pages per query. This evaluation instead
+aggregates 250 complete pages into one global, distractor-rich corpus. It does **not**
 reproduce the Stream RAG paper's separately described 100,000-document corpus or BGE
 reranking stack.
 

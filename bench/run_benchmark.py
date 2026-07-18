@@ -31,6 +31,7 @@ except ModuleNotFoundError:  # Direct execution places bench/ on sys.path.
 ROOT = Path(__file__).resolve().parents[1]
 FREEZE_DOMAIN = b"typed-streamrag-eval-freeze-v1\0"
 DEFAULT_INFERENCE_DIR = ROOT / "bench" / "results" / "inference_bundle"
+SETTLED_DRAFT_DELAY_MS = 500
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -57,6 +58,67 @@ def manifest_relative_path(target: Path, manifest_path: Path) -> str:
 
 def session_scope(run_tag: str, repetition: int, row_id: str, path: str) -> str:
     return f"bench-{run_tag}-{repetition}-{row_id}-{path}"
+
+
+def exact_final_snapshot_completed(schedules: list[dict[str, Any]], query: str) -> bool:
+    """Require exactly one delivered full-draft snapshot before Send."""
+
+    query_length = len(query.strip())
+    exact_snapshots: list[dict[str, Any]] = []
+    for schedule in schedules:
+        try:
+            character_count = int(schedule.get("character_count") or -1)
+        except TypeError, ValueError:
+            continue
+        if schedule.get("is_final") is True and character_count == query_length:
+            exact_snapshots.append(schedule)
+    return len(exact_snapshots) == 1 and exact_snapshots[0].get("transport_status") == "completed"
+
+
+def settled_final_snapshot_observed(
+    schedules: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    query: str,
+    commit_perf_ms: float,
+) -> bool:
+    """Require the quiet-period worker to process the delivered full draft before Send."""
+    expected_query = query.strip()
+    query_length = len(expected_query)
+    revisions = {
+        int(schedule["revision"])
+        for schedule in schedules
+        if schedule.get("is_final") is True
+        and schedule.get("transport_status") == "completed"
+        and int(schedule.get("character_count") or -1) == query_length
+    }
+    if len(revisions) != 1:
+        return False
+    revision = next(iter(revisions))
+
+    def arrived_before_send(event: dict[str, Any]) -> bool:
+        if event.get("benchmark_received_perf_ms") is not None:
+            return float(event["benchmark_received_perf_ms"]) <= commit_perf_ms
+        return (
+            event.get("benchmark_offset_from_commit_ms") is not None
+            and float(event["benchmark_offset_from_commit_ms"]) <= 0
+        )
+
+    settled = any(
+        event.get("type") == "draft.settled"
+        and int(event.get("revision") or -1) == revision
+        and event.get("query") == expected_query
+        and event.get("state") in {"starting", "in_flight", "ready"}
+        and arrived_before_send(event)
+        for event in events
+    )
+    retrieval_started = any(
+        event.get("type") == "retrieval.started"
+        and int(event.get("revision") or -1) == revision
+        and event.get("query") == expected_query
+        and arrived_before_send(event)
+        for event in events
+    )
+    return settled and retrieval_started
 
 
 def read_checksum_manifest(path: Path) -> dict[str, str]:
@@ -139,7 +201,6 @@ async def send_snapshot(
                     "path": "stream",
                     "revision": revision,
                     "text": text_value,
-                    "client_ts_ms": sent_ms,
                 },
             )
             response.raise_for_status()
@@ -216,8 +277,8 @@ def classify_diagnostics(
         evidence_stage = "presubmit_revalidated_at_commit"
     elif reuse_mode == "inflight_completed_postcommit":
         evidence_stage = "inflight_postcommit_overlap"
-    elif accepted_from_fallback or reuse_mode == "commit_endpoint" or explicit_fallback:
-        evidence_stage = "commit_endpoint"
+    elif accepted_from_fallback or reuse_mode == "committed_text_retrieval" or explicit_fallback:
+        evidence_stage = "committed_text_retrieval"
     else:
         evidence_stage = "commit_or_unknown"
 
@@ -235,7 +296,7 @@ def classify_diagnostics(
         "speculative_reuse": evidence_stage
         in {"presubmit_reuse", "presubmit_revalidated_at_commit"},
         "inflight_postcommit_overlap": evidence_stage == "inflight_postcommit_overlap",
-        "commit_fallback": path == "stream" and evidence_stage == "commit_endpoint",
+        "commit_fallback": path == "stream" and evidence_stage == "committed_text_retrieval",
         "reuse_mode": reuse_mode,
         "accepted_ready_before_commit": accepted_ready_before_commit,
         "accepted_retrieval_lead_at_commit_ms": lead_ms,
@@ -247,6 +308,7 @@ def classify_diagnostics(
         "cache_observations": len(cache_observations),
         "trigger_decisions": event_types.count("trigger.decision"),
         "trigger_errors": event_types.count("trigger.error"),
+        "settled_drafts": event_types.count("draft.settled"),
         "retrieval_started": len(retrieval_started),
         "retrieval_ready": len(retrieval_events),
         "retrieval_discarded": event_types.count("retrieval.discarded"),
@@ -261,6 +323,7 @@ async def replay_path(
     row: dict[str, Any],
     repetition: int,
     words_per_minute: float,
+    post_typing_dwell_ms: float,
     path: str,
     path_order_position: int,
     run_tag: str,
@@ -272,8 +335,13 @@ async def replay_path(
     # path/query/repetition prevents either A/B path from receiving the other's work.
     session_id = session_scope(run_tag, repetition, str(row["id"]), path)
     words = row["query"].split()
-    typed_trace = cumulative_typed_trace(row["query"], words_per_minute)
+    typed_trace = cumulative_typed_trace(
+        row["query"],
+        words_per_minute,
+        post_typing_dwell_ms=post_typing_dwell_ms,
+    )
     simulated_typing_ms = typing_duration_ms(row["query"], words_per_minute)
+    planned_commit_offset_ms = simulated_typing_ms + post_typing_dwell_ms
     revision = 0
     case_started_ms = time.perf_counter() * 1000
     turn_events: list[dict[str, Any]] = []
@@ -333,13 +401,12 @@ async def replay_path(
                         )
                     )
                 )
-        send_target_ms = case_started_ms + simulated_typing_ms
+        send_target_ms = case_started_ms + planned_commit_offset_ms
         remaining_s = max(0.0, send_target_ms - time.perf_counter() * 1000) / 1000
         if remaining_s:
             await asyncio.sleep(remaining_s)
-        # Send carries the full text as a higher revision. This mirrors the UI's
-        # immediate click and does not grant Stream a manufactured exact-query
-        # snapshot at the commit boundary.
+        # Send carries the full text as a higher revision. A full-text dirty snapshot
+        # may already exist after the declared pause, but it cannot commit or answer.
         revision += 1
 
         send_boundary_perf_ms = time.perf_counter() * 1000
@@ -352,7 +419,7 @@ async def replay_path(
                 task.cancel()
         commit_perf_ms = time.perf_counter() * 1000
         actual_commit_offset_ms = commit_perf_ms - case_started_ms
-        typing_drift_ms = actual_commit_offset_ms - simulated_typing_ms
+        typing_drift_ms = actual_commit_offset_ms - planned_commit_offset_ms
         committed = await client.post(
             f"{base_url}/v1/turns/{turn_id}/commit",
             json={
@@ -361,7 +428,6 @@ async def replay_path(
                 "revision": revision,
                 "text": row["query"],
                 "query_time": row["query_time"],
-                "client_ts_ms": commit_perf_ms,
             },
         )
         committed.raise_for_status()
@@ -406,9 +472,12 @@ async def replay_path(
                     "typing": {
                         "words_per_minute": words_per_minute,
                         "snapshot_interval_ms": SNAPSHOT_INTERVAL_MS,
-                        "simulated_duration_ms": simulated_typing_ms,
+                        "settled_draft_delay_ms": SETTLED_DRAFT_DELAY_MS,
+                        "typing_duration_ms": simulated_typing_ms,
+                        "post_typing_dwell_ms": post_typing_dwell_ms,
+                        "simulated_duration_ms": planned_commit_offset_ms,
                         "snapshot_count": len(snapshot_schedule),
-                        "planned_commit_offset_ms": simulated_typing_ms,
+                        "planned_commit_offset_ms": planned_commit_offset_ms,
                         "send_boundary_offset_ms": send_boundary_perf_ms - case_started_ms,
                         "actual_commit_offset_ms": actual_commit_offset_ms,
                         "snapshot_abort_overhead_ms": commit_perf_ms - send_boundary_perf_ms,
@@ -479,9 +548,25 @@ async def replay_path(
         received_ms = float(event.pop("benchmark_received_perf_ms", commit_perf_ms))
         event["benchmark_offset_from_commit_ms"] = round(received_ms - commit_perf_ms, 3)
     output["snapshot_schedule"] = snapshot_schedule
-    output["snapshot_transport_errors"] = sum(
+    snapshot_transport_errors = sum(
         schedule.get("transport_status") not in {"completed", "aborted_at_commit"}
         for schedule in snapshot_schedule
+    )
+    exact_final_completed = path != "stream" or exact_final_snapshot_completed(
+        snapshot_schedule, str(row["query"])
+    )
+    settled_final_observed = path != "stream" or settled_final_snapshot_observed(
+        snapshot_schedule,
+        all_events,
+        str(row["query"]),
+        commit_perf_ms,
+    )
+    output["exact_final_snapshot_completed"] = exact_final_completed if path == "stream" else None
+    output["settled_final_snapshot_observed"] = settled_final_observed if path == "stream" else None
+    output["snapshot_transport_errors"] = max(
+        snapshot_transport_errors,
+        int(not exact_final_completed),
+        int(not settled_final_observed),
     )
     output["snapshot_requests_aborted_at_commit"] = sum(
         schedule.get("transport_status") == "aborted_at_commit" for schedule in snapshot_schedule
@@ -549,6 +634,7 @@ async def run_case(
     row: dict[str, Any],
     repetition: int,
     words_per_minute: float,
+    post_typing_dwell_ms: float,
     path: str,
     path_order_position: int,
     run_tag: str,
@@ -565,6 +651,7 @@ async def run_case(
                 row,
                 repetition,
                 words_per_minute,
+                post_typing_dwell_ms,
                 path,
                 path_order_position,
                 run_tag,
@@ -674,6 +761,12 @@ async def main() -> None:
     )
     parser.add_argument("--wpm", type=float, default=70.0)
     parser.add_argument(
+        "--post-typing-dwell-ms",
+        type=float,
+        default=5000.0,
+        help="fixed pause after the final character and before Send",
+    )
+    parser.add_argument(
         "--max-typing-drift-ms",
         type=float,
         default=100.0,
@@ -705,6 +798,8 @@ async def main() -> None:
         parser.error("--query-limit must be at least 1")
     if args.wpm <= 0:
         parser.error("--wpm must be greater than zero")
+    if args.post_typing_dwell_ms < 0:
+        parser.error("--post-typing-dwell-ms must be non-negative")
     if args.max_typing_drift_ms < 0:
         parser.error("--max-typing-drift-ms must be non-negative")
     if args.case_timeout_s <= 0:
@@ -831,9 +926,7 @@ async def main() -> None:
                     "service_tier": "default",
                 }
                 mismatches = [
-                    key
-                    for key, value in expected_configuration.items()
-                    if status.get(key) != value
+                    key for key, value in expected_configuration.items() if status.get(key) != value
                 ]
                 if mismatches:
                     raise SystemExit(
@@ -855,6 +948,7 @@ async def main() -> None:
             "index_source_sha256",
             "current_index_source_sha256",
             "index_matches_current_corpus",
+            "index_metadata_ready",
             "backend_source_sha256",
             "config_hash",
             "dataset_checksum",
@@ -868,6 +962,7 @@ async def main() -> None:
             "reasoning_effort",
             "trigger_reasoning_effort",
             "summary_reasoning_effort",
+            "settled_draft_delay_ms",
             "service_tier",
             "index_pipeline_version",
         )
@@ -944,6 +1039,11 @@ async def main() -> None:
             and args.repetitions == 1
             and args.query_limit == 10
             and len(rows) == 10
+            and args.wpm == 70.0
+            and args.post_typing_dwell_ms == 5000.0
+            and int(statuses["stream"]["settled_draft_delay_ms"]) == SETTLED_DRAFT_DELAY_MS
+            and args.max_typing_drift_ms == 100.0
+            and args.case_timeout_s == 45.0
         )
         manifest: dict[str, Any] = {
             "schema_version": 4,
@@ -983,6 +1083,8 @@ async def main() -> None:
             "warmup_failures": 0,
             "repetitions": args.repetitions,
             "words_per_minute": args.wpm,
+            "post_typing_dwell_ms": args.post_typing_dwell_ms,
+            "settled_draft_delay_ms": SETTLED_DRAFT_DELAY_MS,
             "case_deadline_s": args.case_timeout_s,
             "max_typing_drift_ms": args.max_typing_drift_ms,
             "smoke_non_reportable": args.smoke,
@@ -992,15 +1094,27 @@ async def main() -> None:
             "distinct_backend_instances": distinct_instances,
             "compared_status_fields": list(comparable_fields),
             "text_input_contract": {
-                "snapshots": "400 ms cumulative dirty-text samples, including partial words",
-                "sampling_boundary": "ticks strictly before deterministic Send time",
-                "commit": "full text is carried only by the higher-revision Send payload",
+                "snapshots": (
+                    "400 ms changed-only cumulative dirty-text deliveries, including partial "
+                    "words; unchanged ticks emit no request"
+                ),
+                "sampling_boundary": (
+                    "the sampler ticks strictly before deterministic Send time through the "
+                    "fixed post-typing dwell, but only changed text is delivered"
+                ),
+                "post_typing_dwell_ms": args.post_typing_dwell_ms,
+                "commit": (
+                    "Send carries full text at a higher revision; dirty snapshots never commit "
+                    "or produce an answer"
+                ),
                 "ui_snapshot_sampling_ms": 400,
                 "server_trigger_interval_ms": 500,
+                "server_settled_draft_delay_ms": SETTLED_DRAFT_DELAY_MS,
                 "trigger_min_words": 5,
                 "snapshot_transport": (
-                    "asynchronous requests never delay the planned Send boundary; unfinished "
-                    "or failed sends make the run non-reportable"
+                    "asynchronous requests never delay the planned Send boundary; the exact "
+                    "full-draft dwell snapshot must complete, obsolete prefix requests may be "
+                    "aborted at Send, and other transport failures make the run non-reportable"
                 ),
                 "excluded": ["ASR latency", "endpoint detection", "trailing silence"],
             },
@@ -1010,6 +1124,11 @@ async def main() -> None:
                 "required_total_path_runs": 20,
                 "required_warmup_repetitions": 0,
                 "required_measured_repetitions": 1,
+                "required_words_per_minute": 70.0,
+                "required_post_typing_dwell_ms": 5000.0,
+                "required_settled_draft_delay_ms": SETTLED_DRAFT_DELAY_MS,
+                "required_max_typing_drift_ms": 100.0,
+                "required_case_deadline_s": 45.0,
             },
             "warmup_gate": {"status": "pending"},
             "timing_drift_gate": {"status": "pending"},
@@ -1068,6 +1187,7 @@ async def main() -> None:
                             row=row,
                             repetition=warmup_repetition,
                             words_per_minute=args.wpm,
+                            post_typing_dwell_ms=args.post_typing_dwell_ms,
                             path=path,
                             path_order_position=position,
                             run_tag=run_tag,
@@ -1127,6 +1247,7 @@ async def main() -> None:
                                 row=row,
                                 repetition=repetition,
                                 words_per_minute=args.wpm,
+                                post_typing_dwell_ms=args.post_typing_dwell_ms,
                                 path=path,
                                 path_order_position=position,
                                 run_tag=run_tag,

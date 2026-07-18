@@ -13,6 +13,7 @@ BENCH_SUMMARY ?= $(BENCH_FINAL_DIR)/summary.json
 BENCH_ADJUDICATIONS ?= $(BENCH_FINAL_DIR)/manual_adjudications.jsonl
 BENCH_QUERY_LIMIT ?= 10
 BENCH_CASE_TIMEOUT_S ?= 45
+BENCH_POST_TYPING_DWELL_MS ?= 5000
 DEV_QUERY_LIMIT ?= 5
 DEV_PREDICTIONS ?= bench/results/dev-comparison/predictions.jsonl
 DEV_SUMMARY ?= bench/results/dev-comparison/summary.json
@@ -78,6 +79,7 @@ benchmark-dev-services-serve:
 
 benchmark-smoke:
 	uv run python bench/run_benchmark.py --smoke --query-limit $(DEV_QUERY_LIMIT) --wpm 70 \
+		--post-typing-dwell-ms $(BENCH_POST_TYPING_DWELL_MS) \
 		--case-timeout-s $(BENCH_CASE_TIMEOUT_S) --max-typing-drift-ms 100 \
 		--queries $(SMOKE_EVALUATION_DIR)/dev_queries.jsonl \
 		--naive-base-url $(DEV_NAIVE_BASE_URL) --stream-base-url $(DEV_STREAM_BASE_URL) \
@@ -91,6 +93,7 @@ score-dev:
 benchmark:
 	uv run python bench/run_benchmark.py --warmup-repetitions 0 --repetitions 1 \
 		--query-limit $(BENCH_QUERY_LIMIT) --wpm 70 \
+		--post-typing-dwell-ms $(BENCH_POST_TYPING_DWELL_MS) \
 		--case-timeout-s $(BENCH_CASE_TIMEOUT_S) --max-typing-drift-ms 100 \
 		--queries $(BENCH_INFERENCE_DIR)/test_queries.jsonl \
 		--naive-base-url $(NAIVE_BASE_URL) --stream-base-url $(STREAM_BASE_URL) \

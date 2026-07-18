@@ -64,7 +64,14 @@
     "stabilization_class_confidence": "low",
     "stabilization_class_status": "heuristic_pending_manual_review",
     "test_questions": 10,
-    "text_input_contract": "400 ms cumulative dirty-text ticks strictly before Send; commit carries full text as a higher revision"
+    "text_input_contract": {
+      "answer_before_send": false,
+      "commit": "full text at a higher revision",
+      "post_typing_dwell_ms": 5000,
+      "settled_draft_delay_ms": 500,
+      "snapshot_interval_ms": 400,
+      "snapshots": "changed-only cumulative dirty text; unchanged 400 ms ticks emit no snapshot; after 500 ms unchanged, the latest delivered draft starts exact speculative retrieval without generating an answer"
+    }
   },
   "source": {
     "characters": 255117738,

@@ -319,9 +319,10 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 def compress_corpus(stage: Path) -> Path:
     source = stage / "documents.jsonl"
     target = stage / "documents.jsonl.bz2"
-    with source.open("rb") as input_handle, bz2.open(
-        target, "wb", compresslevel=9
-    ) as output_handle:
+    with (
+        source.open("rb") as input_handle,
+        bz2.open(target, "wb", compresslevel=9) as output_handle,
+    ):
         shutil.copyfileobj(input_handle, output_handle, length=1024 * 1024)
     source.unlink()
     return target
@@ -339,9 +340,7 @@ def compact_corpus(
     only as needed to meet the assignment's reproduction-time budget.
     """
 
-    supporting_ids = {
-        doc_id for _role, item in selected for doc_id in item.supporting_doc_ids
-    }
+    supporting_ids = {doc_id for _role, item in selected for doc_id in item.supporting_doc_ids}
     mandatory_ids = supporting_ids
     encoding = tiktoken.get_encoding("cl100k_base")
 
@@ -381,9 +380,7 @@ def compact_corpus(
                 "selected-corpus-order" if is_mandatory else "distractor-corpus-order",
                 doc_id,
             )
-            metadata.append(
-                (order_hash, doc_id, offset, points, embedded_tokens, is_mandatory)
-            )
+            metadata.append((order_hash, doc_id, offset, points, embedded_tokens, is_mandatory))
 
     missing = sorted(mandatory_ids - found_ids)
     if missing:
@@ -569,8 +566,7 @@ def scan_source(
             ]
             if missing_phrases:
                 raise RuntimeError(
-                    f"curated evidence phrase is missing for {interaction_id}: "
-                    f"{missing_phrases}"
+                    f"curated evidence phrase is missing for {interaction_id}: {missing_phrases}"
                 )
             for doc_id in spec.supporting_doc_ids:
                 points = support_point_count(page_titles.get(doc_id, ""), page_texts[doc_id])
@@ -597,9 +593,7 @@ def scan_source(
                 source_pages=tuple(dict.fromkeys(source_pages)),
             )
     missing_interactions = [
-        item.interaction_id
-        for item in CURATED_SPECS
-        if item.interaction_id not in candidates_by_id
+        item.interaction_id for item in CURATED_SPECS if item.interaction_id not in candidates_by_id
     ]
     if missing_interactions:
         raise RuntimeError(f"curated interactions are missing from source: {missing_interactions}")
@@ -790,10 +784,18 @@ def write_candidate_outputs(
             "stabilization_class_assigned_after_selection": True,
             "stabilization_class_status": "heuristic_pending_manual_review",
             "stabilization_class_confidence": "low",
-            "text_input_contract": (
-                "400 ms cumulative dirty-text ticks strictly before Send; "
-                "commit carries full text as a higher revision"
-            ),
+            "text_input_contract": {
+                "snapshot_interval_ms": 400,
+                "post_typing_dwell_ms": 5000,
+                "settled_draft_delay_ms": 500,
+                "snapshots": (
+                    "changed-only cumulative dirty text; unchanged 400 ms ticks emit no "
+                    "snapshot; after 500 ms unchanged, the latest delivered draft starts "
+                    "exact speculative retrieval without generating an answer"
+                ),
+                "commit": "full text at a higher revision",
+                "answer_before_send": False,
+            },
             "speech_latency_excluded": ["ASR", "endpoint detection", "trailing silence"],
         },
         "dev": {
@@ -833,13 +835,13 @@ def write_candidate_outputs(
                 "source": summary["source"],
                 "selection_seed": SEED,
                 "rules": [
-                "official split 0 development and split 1 test",
-                "human-authored web questions only",
-                f"at least {min_words} whitespace-delimited words",
-                "every item has manually audited predicate-level evidence in its own pages",
-                f"each audited support page uses at most {MAX_SUPPORT_POINTS} index points",
-                "one development and two test questions per domain",
-                "selection never uses Naive RAG or StreamRAG outputs",
+                    "official split 0 development and split 1 test",
+                    "human-authored web questions only",
+                    f"at least {min_words} whitespace-delimited words",
+                    "every item has manually audited predicate-level evidence in its own pages",
+                    f"each audited support page uses at most {MAX_SUPPORT_POINTS} index points",
+                    "one development and two test questions per domain",
+                    "selection never uses Naive RAG or StreamRAG outputs",
                     "stabilization classes are assigned only after selection and require review",
                 ],
                 "items": manifest,
@@ -857,8 +859,9 @@ def write_candidate_outputs(
         "> **Status: PENDING HUMAN REVIEW.** Do not freeze or run the unseen test split",
         "> until every item and the global-corpus construction have been reviewed.",
         "",
-        "This candidate is deliberately text-first: cumulative dirty text is sampled every",
-        "400 ms only at ticks strictly before Send. The commit carries final text as a higher",
+        "This candidate is deliberately text-first: changed-only cumulative dirty text is",
+        "sampled every 400 ms before Send; unchanged ticks emit no snapshot. The commit",
+        "carries final text as a higher",
         "revision; speech-only gains are out of scope.",
         "",
     ]
@@ -922,14 +925,15 @@ the assignment runtime budget; no page is cut. The resulting
 {MAX_INDEX_POINTS:,}-point embedded-Qdrant target and require no Qdrant API key.
 
 The construction is text-specific: approximate standard five-character WPM typing,
-sample cumulative dirty text every 400 ms (partial words included) only at ticks strictly
-before **Send**, carry full text in the higher-revision commit, and exclude speech-only
+sample changed-only cumulative dirty text every 400 ms (partial words included) at ticks
+strictly before **Send**, emit no snapshot for unchanged ticks during the declared
+post-typing pause, carry full text in the higher-revision commit, and exclude speech-only
 latency gains.
 
-The official Task 1/2 release contains up to five pages per query. Therefore this script's
-global aggregate is larger and more distractor-rich than CRAG-200, but it does **not**
-reproduce the Stream RAG paper's separately described 100,000-document corpus or BGE
-reranking stack.
+The official Task 1/2 release contains up to five pages per query. This evaluation instead
+aggregates {corpus_stats["documents"]:,} complete pages into one global, distractor-rich
+corpus. It does **not** reproduce the Stream RAG paper's separately described
+100,000-document corpus or BGE reranking stack.
 
 Test labels are stored only in `test_gold.jsonl`; the application indexes only
 the checksum-bound `documents.jsonl.bz2` corpus. Selection is the fixed manual mapping

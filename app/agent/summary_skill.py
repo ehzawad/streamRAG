@@ -40,6 +40,8 @@ class CompressionResult:
     memory: SessionMemory
     usage: Usage
     compressed: bool
+    accounting_complete: bool = True
+    unpriced_timeout_calls: int = 0
 
 
 class ConversationSummarySkill:
@@ -95,7 +97,13 @@ class ConversationSummarySkill:
                     usage_limits=UsageLimits(request_limit=1, output_tokens_limit=320),
                 )
         except TimeoutError:
-            return CompressionResult(memory, Usage(), False)
+            return CompressionResult(
+                memory,
+                Usage(),
+                False,
+                accounting_complete=False,
+                unpriced_timeout_calls=1,
+            )
         compacted = SessionMemory(
             messages=recent_messages,
             summary=str(result.output).strip(),

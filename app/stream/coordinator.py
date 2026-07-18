@@ -108,6 +108,7 @@ class RetrievalEvidence:
     completed_ms: float
     validated_ms: float | None = None
     controller_validated: bool = True
+    commit_safe_exact: bool = False
 
 
 @dataclass(frozen=True)
@@ -118,28 +119,13 @@ class EvidencePromotion:
 
 
 @dataclass
-class EndpointPlanResult:
-    """Complete-input controller decision, before any endpoint retrieval."""
-
-    query: str
-    decision_action: str = "retrieve"
-    controller_usage: Usage = field(default_factory=Usage)
-    controller_calls: int = 1
-    controller_timeouts: int = 0
-    controller_failures: int = 0
-    controller_elapsed_ms: float = 0.0
-
-
-EndpointPlan = Callable[[InputSnapshot, str | None], Awaitable[EndpointPlanResult]]
-
-
-@dataclass
 class StreamMetrics:
     started_ms: float = field(default_factory=lambda: time.perf_counter() * 1000)
     trigger_usage: Usage = field(default_factory=Usage)
     trigger_calls: int = 0
     retrieval_calls: int = 0
     raw_retrieval_calls: int = 0
+    settled_draft_retrievals: int = 0
     retrieval_embedding_tokens: int = 0
     retrieval_query_vector_ms: float = 0.0
     retrieval_ann_ms: float = 0.0
@@ -150,11 +136,11 @@ class StreamMetrics:
     retrieval_timeouts: int = 0
     retrieval_failures: int = 0
     trigger_cancellations: int = 0
+    unpriced_trigger_cancellations: int = 0
     retrieval_cancellations: int = 0
     evidence_reuses: int = 0
     evidence_revalidations: int = 0
     commit_fallbacks: int = 0
-    endpoint_failures: int = 0
     first_retrieval_started_ms: float | None = None
     first_retrieval_ready_ms: float | None = None
     accepted_retrieval_started_ms: float | None = None
@@ -167,7 +153,7 @@ class StreamMetrics:
 
 
 class StreamCoordinator:
-    """One-thread speculative retrieval with correction-aware freshness gates."""
+    """Per-turn speculative retrieval with single-flight, correction-aware gates."""
 
     def __init__(
         self,
@@ -177,7 +163,6 @@ class StreamCoordinator:
         trigger: ModelTrigger,
         settings: Settings,
         send: Send,
-        endpoint_plan: EndpointPlan,
         conversation_context: str = "",
         analyzer: SnapshotAnalyzer | None = None,
         cache_scope: str = "stream",
@@ -191,7 +176,6 @@ class StreamCoordinator:
         self.send = send
         self.conversation_context = conversation_context
         self.analyzer = analyzer or SnapshotAnalyzer()
-        self.endpoint_plan = endpoint_plan
         self.cache_scope = cache_scope
         self.last_activity_ms = time.perf_counter() * 1000
         self.latest = InputSnapshot(turn_id=turn_id, revision=0, text="")
@@ -201,12 +185,17 @@ class StreamCoordinator:
         self.evidence: RetrievalEvidence | None = None
         self.metrics = StreamMetrics()
         self._trigger_task: asyncio.Task | None = None
+        self._trigger_call_states: dict[asyncio.Task, str] = {}
         self._retrieval_task: asyncio.Task | None = None
+        self._retrieval_cancel_requested: set[asyncio.Task] = set()
         self._retrieval_query: str | None = None
         self._retrieval_source_text: str | None = None
         self._retrieval_controller_validated = True
+        self._retrieval_commit_safe_exact = False
         self._pending_promotion: EvidencePromotion | None = None
         self._pending_snapshot: InputSnapshot | None = None
+        self._quiet_task: asyncio.Task | None = None
+        self._cleanup_tasks: set[asyncio.Task] = set()
         self._closed = False
         self._committed = False
 
@@ -227,12 +216,11 @@ class StreamCoordinator:
 
     def _cancel_for_correction(self) -> None:
         """Invalidate work only when the user changed existing text."""
+        self._cancel_quiet_task()
         if self._active(self._trigger_task):
-            self.metrics.trigger_cancellations += 1
-            self._trigger_task.cancel()
+            self._cancel_trigger_task(self._trigger_task)
         if self._active(self._retrieval_task):
-            self.metrics.retrieval_cancellations += 1
-            self._retrieval_task.cancel()
+            self._cancel_retrieval_task(self._retrieval_task)
         self._pending_snapshot = None
         self._pending_promotion = None
         self.previous_query = None
@@ -256,6 +244,115 @@ class StreamCoordinator:
             terminal_boundary and self.metrics.trigger_calls < adaptive_limit + 1
         )
 
+    def _cancel_quiet_task(self) -> None:
+        task = self._quiet_task
+        self._quiet_task = None
+        if self._active(task):
+            task.cancel()
+            self._track_cleanup(task)
+
+    def _arm_quiet_period(self, snapshot: InputSnapshot) -> None:
+        self._quiet_task = asyncio.create_task(self._quiet_worker(snapshot))
+
+    async def _quiet_worker(self, snapshot: InputSnapshot) -> None:
+        try:
+            await asyncio.sleep(self.settings.settled_draft_delay_ms / 1000)
+            if (
+                self._closed
+                or self._committed
+                or self._quiet_task is not asyncio.current_task()
+                or self.latest.revision != snapshot.revision
+                or self.latest.text != snapshot.text
+            ):
+                return
+            await self._start_settled_draft_retrieval(snapshot)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._quiet_task is asyncio.current_task():
+                self._quiet_task = None
+
+    async def _start_settled_draft_retrieval(self, snapshot: InputSnapshot) -> None:
+        """Move exact retrieval into a quiet typing pause without generating an answer."""
+        if self._closed or self._committed or self.latest != snapshot:
+            return
+
+        self._pending_snapshot = None
+        if self._active(self._trigger_task):
+            task = self._trigger_task
+            self._cancel_trigger_task(task)
+            self._trigger_task = None
+            self._track_cleanup(task)
+
+        query = bounded_retrieval_query(snapshot.text)
+        evidence = self.evidence
+        if (
+            evidence is not None
+            and evidence.source_text == snapshot.text
+            and evidence.query == query
+        ):
+            if not evidence.commit_safe_exact:
+                self.evidence = RetrievalEvidence(
+                    source_text=evidence.source_text,
+                    revision=evidence.revision,
+                    query=evidence.query,
+                    result=evidence.result,
+                    started_ms=evidence.started_ms,
+                    completed_ms=evidence.completed_ms,
+                    validated_ms=evidence.validated_ms,
+                    controller_validated=evidence.controller_validated,
+                    commit_safe_exact=True,
+                )
+                self.metrics.evidence_revalidations += 1
+            self.previous_query = query
+            await self.send(
+                {
+                    "type": "draft.settled",
+                    "revision": snapshot.revision,
+                    "query": query,
+                    "state": "ready",
+                }
+            )
+            return
+
+        if (
+            self._active(self._retrieval_task)
+            and self._retrieval_source_text == snapshot.text
+            and self._retrieval_query is not None
+            and self._retrieval_query == query
+        ):
+            self._retrieval_commit_safe_exact = True
+            self.previous_query = query
+            await self.send(
+                {
+                    "type": "draft.settled",
+                    "revision": snapshot.revision,
+                    "query": query,
+                    "state": "in_flight",
+                }
+            )
+            return
+
+        await self._cancel_active_retrieval()
+        if self._closed or self._committed or self.latest != snapshot:
+            return
+        self.previous_query = query
+        self.metrics.settled_draft_retrievals += 1
+        self._start_retrieval(
+            snapshot,
+            query,
+            controller_validated=False,
+            commit_safe_exact=True,
+        )
+        await self.send(
+            {
+                "type": "draft.settled",
+                "revision": snapshot.revision,
+                "query": query,
+                "state": "starting",
+            }
+        )
+
     def _eligible(self, snapshot: InputSnapshot, *, now_ms: float) -> bool:
         delta = self.analyzer.analyze(self.latest.text, snapshot.text)
         # update() installs snapshot as latest before calling this helper, so use
@@ -265,8 +362,7 @@ class StreamCoordinator:
         return (
             delta.word_count >= self.settings.trigger_min_tokens
             and (
-                trigger_delta.new_words >= self.settings.trigger_min_new_tokens
-                or terminal_boundary
+                trigger_delta.new_words >= self.settings.trigger_min_new_tokens or terminal_boundary
             )
             and now_ms - self.last_trigger_ms >= self.settings.trigger_interval_ms
             and self._within_call_budget(snapshot)
@@ -277,6 +373,7 @@ class StreamCoordinator:
             return
         if snapshot.revision <= self.latest.revision and self.latest.text:
             return
+        self._cancel_quiet_task()
         prior = self.latest.text
         self.last_activity_ms = time.perf_counter() * 1000
         delta = self.analyzer.analyze(prior, snapshot.text)
@@ -291,6 +388,14 @@ class StreamCoordinator:
                 "analyzer": self.analyzer.backend,
             }
         )
+        if (
+            self._closed
+            or self._committed
+            or self.latest.revision != snapshot.revision
+            or self.latest.text != snapshot.text
+        ):
+            return
+        self._arm_quiet_period(snapshot)
         now = time.perf_counter() * 1000
         if not self._eligible(snapshot, now_ms=now):
             return
@@ -309,6 +414,7 @@ class StreamCoordinator:
             if snapshot.revision != self.latest.revision or snapshot.text != self.latest.text:
                 raise ValueError("committed snapshot changed")
             return
+        self._cancel_quiet_task()
         prior = self.latest.text
         if prior and snapshot.text != prior and not snapshot.text.startswith(prior):
             self._cancel_for_correction()
@@ -333,9 +439,8 @@ class StreamCoordinator:
                 minimum_words=self.settings.trigger_min_tokens,
             )
             candidate_query = bounded_retrieval_query(raw_prefix) if raw_prefix else None
-        self._trigger_task = asyncio.create_task(
-            self._trigger_worker(snapshot, candidate_query)
-        )
+        self._trigger_task = asyncio.create_task(self._trigger_worker(snapshot, candidate_query))
+        self._trigger_call_states[self._trigger_task] = "pending"
         if candidate_query is not None and raw_prefix is not None:
             raw_snapshot = snapshot.model_copy(update={"text": raw_prefix})
             self._start_retrieval(
@@ -353,6 +458,7 @@ class StreamCoordinator:
             return await self._run_trigger(snapshot, candidate_query)
         finally:
             current = asyncio.current_task()
+            self._trigger_call_states.pop(current, None)
             if self._trigger_task is current:
                 self._trigger_task = None
                 pending = self._pending_snapshot
@@ -379,7 +485,6 @@ class StreamCoordinator:
                     draft=snapshot.text,
                     previous_query=candidate_query or self.previous_query,
                     conversation_context=self.conversation_context,
-                    is_commit=False,
                 ),
                 timeout=self.settings.trigger_timeout_s,
             )
@@ -387,6 +492,7 @@ class StreamCoordinator:
             return None
         except TimeoutError:
             self.metrics.trigger_timeouts += 1
+            self._set_trigger_call_state("timeout")
             await self.send(
                 {
                     "type": "trigger.error",
@@ -397,6 +503,7 @@ class StreamCoordinator:
             return None
         except Exception:
             self.metrics.controller_failures += 1
+            self._set_trigger_call_state("failure")
             await self.send(
                 {
                     "type": "trigger.error",
@@ -406,10 +513,9 @@ class StreamCoordinator:
             )
             return None
         finally:
-            self.metrics.trigger_elapsed_ms += (
-                time.perf_counter() - controller_started
-            ) * 1000
+            self.metrics.trigger_elapsed_ms += (time.perf_counter() - controller_started) * 1000
         self.metrics.trigger_usage.add(result.usage)
+        self._set_trigger_call_state("accounted")
         if not self._compatible_with_latest(snapshot):
             self.metrics.stale_discards += 1
             return None
@@ -429,17 +535,13 @@ class StreamCoordinator:
             await self._revalidate_query(
                 snapshot,
                 candidate_query,
-                commit_validation=False,
             )
         elif decision.action == "retrieve" and decision.retrieval_query:
             self.previous_query = decision.retrieval_query
-            if candidate_query and self._same_query(
-                candidate_query, decision.retrieval_query
-            ):
+            if candidate_query and self._same_query(candidate_query, decision.retrieval_query):
                 await self._revalidate_query(
                     snapshot,
                     candidate_query,
-                    commit_validation=False,
                 )
             else:
                 self._start_retrieval(snapshot, decision.retrieval_query)
@@ -476,14 +578,12 @@ class StreamCoordinator:
         query = self.previous_query
         if not query or not self._compatible_with_latest(snapshot):
             return
-        await self._revalidate_query(snapshot, query, commit_validation=False)
+        await self._revalidate_query(snapshot, query)
 
     async def _revalidate_query(
         self,
         snapshot: InputSnapshot,
         query: str,
-        *,
-        commit_validation: bool,
     ) -> None:
         """Promote compatible prefix work after the controller confirms its query."""
         if not self._compatible_with_latest(snapshot):
@@ -511,7 +611,7 @@ class StreamCoordinator:
                     "type": "retrieval.revalidated",
                     "revision": snapshot.revision,
                     "query": evidence.query,
-                    "state": "ready_at_commit" if commit_validation else "ready",
+                    "state": "ready",
                 }
             )
             return
@@ -533,7 +633,7 @@ class StreamCoordinator:
                     "type": "retrieval.revalidated",
                     "revision": snapshot.revision,
                     "query": query,
-                    "state": "in_flight_at_commit" if commit_validation else "in_flight",
+                    "state": "in_flight",
                 }
             )
 
@@ -543,25 +643,29 @@ class StreamCoordinator:
         query: str,
         *,
         controller_validated: bool = True,
+        commit_safe_exact: bool = False,
     ) -> None:
         if self._active(self._retrieval_task):
             if self._retrieval_query == query and self._compatible_with_latest(snapshot):
                 return
             # A model-issued replacement query supersedes the old retrieval. An
             # ordinary revision by itself never reaches this cancellation path.
-            self.metrics.retrieval_cancellations += 1
-            self._retrieval_task.cancel()
-        if self._pending_promotion and not self._same_query(
-            self._pending_promotion.query, query
-        ):
+            self._cancel_retrieval_task(self._retrieval_task)
+        if self._pending_promotion and not self._same_query(self._pending_promotion.query, query):
             self._pending_promotion = None
         if self.evidence is not None and not self._same_query(self.evidence.query, query):
             self.evidence = None
         self._retrieval_query = query
         self._retrieval_source_text = snapshot.text
         self._retrieval_controller_validated = controller_validated
+        self._retrieval_commit_safe_exact = commit_safe_exact
         self._retrieval_task = asyncio.create_task(
-            self._retrieval_worker(snapshot, query, controller_validated)
+            self._retrieval_worker(
+                snapshot,
+                query,
+                controller_validated,
+                commit_safe_exact,
+            )
         )
 
     async def _retrieval_worker(
@@ -569,15 +673,22 @@ class StreamCoordinator:
         snapshot: InputSnapshot,
         query: str,
         controller_validated: bool,
+        commit_safe_exact: bool,
     ) -> None:
         try:
-            await self._run_retrieval(snapshot, query, controller_validated)
+            await self._run_retrieval(
+                snapshot,
+                query,
+                controller_validated,
+                commit_safe_exact,
+            )
         finally:
             if self._retrieval_task is asyncio.current_task():
                 self._retrieval_task = None
                 self._retrieval_query = None
                 self._retrieval_source_text = None
                 self._retrieval_controller_validated = True
+                self._retrieval_commit_safe_exact = False
                 self._pending_promotion = None
 
     async def _run_retrieval(
@@ -585,6 +696,7 @@ class StreamCoordinator:
         snapshot: InputSnapshot,
         query: str,
         controller_validated: bool,
+        commit_safe_exact: bool,
     ) -> None:
         self.metrics.retrieval_calls += 1
         if not controller_validated:
@@ -597,7 +709,8 @@ class StreamCoordinator:
                 "type": "retrieval.started",
                 "revision": snapshot.revision,
                 "query": query,
-                "candidate": not controller_validated,
+                "candidate": not (controller_validated or commit_safe_exact),
+                "commit_safe_exact": commit_safe_exact,
             }
         )
         try:
@@ -655,6 +768,9 @@ class StreamCoordinator:
             and self._compatible_with_latest(promotion.snapshot)
         )
         accepted_snapshot = promotion.snapshot if promoted and promotion else snapshot
+        effective_commit_safe_exact = commit_safe_exact or (
+            self._retrieval_task is asyncio.current_task() and self._retrieval_commit_safe_exact
+        )
         self.evidence = RetrievalEvidence(
             source_text=accepted_snapshot.text,
             revision=accepted_snapshot.revision,
@@ -667,7 +783,10 @@ class StreamCoordinator:
                 if promoted and promotion is not None
                 else None
             ),
-            controller_validated=controller_validated or promoted,
+            controller_validated=(
+                controller_validated or (promoted and not effective_commit_safe_exact)
+            ),
+            commit_safe_exact=effective_commit_safe_exact,
         )
         await self.send(
             {
@@ -676,7 +795,8 @@ class StreamCoordinator:
                 "query": query,
                 "hits": len(result.hits),
                 "elapsed_ms": round(result.elapsed_ms, 2),
-                "candidate": not (controller_validated or promoted),
+                "candidate": not (controller_validated or promoted or effective_commit_safe_exact),
+                "commit_safe_exact": effective_commit_safe_exact,
             }
         )
 
@@ -684,7 +804,7 @@ class StreamCoordinator:
         evidence = self.evidence
         if (
             evidence is not None
-            and evidence.controller_validated
+            and (evidence.controller_validated or evidence.commit_safe_exact)
             and evidence.source_text == snapshot.text
         ):
             return evidence
@@ -740,10 +860,9 @@ class StreamCoordinator:
     async def _direct_commit_retrieval(
         self,
         snapshot: InputSnapshot,
-        query: str | None = None,
     ) -> RetrievalEvidence:
-        """Run the one final retrieval selected by the complete-input controller."""
-        retrieval_query = bounded_retrieval_query(query or snapshot.text)
+        """Search the immutable committed text once without another model decision."""
+        retrieval_query = bounded_retrieval_query(snapshot.text)
         self.metrics.retrieval_calls += 1
         started = time.perf_counter() * 1000
         try:
@@ -753,7 +872,10 @@ class StreamCoordinator:
             )
         except TimeoutError:
             self.metrics.retrieval_timeouts += 1
-            raise RuntimeError("endpoint retrieval timed out") from None
+            raise RuntimeError("committed-text retrieval timed out") from None
+        except Exception:
+            self.metrics.retrieval_failures += 1
+            raise
         self.metrics.retrieval_embedding_tokens += result.embedding_tokens
         self.metrics.retrieval_query_vector_ms += result.query_vector_ms
         self.metrics.retrieval_ann_ms += result.ann_ms
@@ -769,106 +891,149 @@ class StreamCoordinator:
 
     async def _stop_remaining_speculation(self) -> None:
         """Cancel unfinished work after exact committed evidence has won."""
-        tasks: list[asyncio.Task] = []
+        cancelled = False
         if self._active(self._trigger_task):
-            self.metrics.trigger_cancellations += 1
-            self._trigger_task.cancel()
-            tasks.append(self._trigger_task)
+            task = self._trigger_task
+            self._cancel_trigger_task(task)
+            self._trigger_task = None
+            self._track_cleanup(task)
+            cancelled = True
         if self._active(self._retrieval_task):
-            self.metrics.retrieval_cancellations += 1
-            self._retrieval_task.cancel()
-            tasks.append(self._retrieval_task)
+            cancelled = self._cancel_retrieval_task(self._retrieval_task) or cancelled
         self._pending_snapshot = None
         self._pending_promotion = None
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if cancelled:
+            await asyncio.sleep(0)
 
     async def _stop_trigger_for_commit(self) -> None:
         """Stop an unfinished prefix decision while preserving useful retrieval."""
         self._pending_snapshot = None
         if not self._active(self._trigger_task):
             return
-        self.metrics.trigger_cancellations += 1
         task = self._trigger_task
+        self._cancel_trigger_task(task)
+        self._trigger_task = None
+        self._track_cleanup(task)
+        await asyncio.sleep(0)
+
+    def _track_cleanup(self, task: asyncio.Task) -> None:
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._finish_cleanup)
+
+    def _finish_cleanup(self, task: asyncio.Task) -> None:
+        self._cleanup_tasks.discard(task)
+        self._retrieval_cancel_requested.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError, Exception:
+            pass
+
+    def _set_trigger_call_state(self, state: str) -> None:
+        task = asyncio.current_task()
+        if task in self._trigger_call_states:
+            self._trigger_call_states[task] = state
+
+    def _cancel_trigger_task(self, task: asyncio.Task) -> None:
+        state = self._trigger_call_states.get(task)
+        if state == "cancel_requested":
+            return
+        self.metrics.trigger_cancellations += 1
+        if state == "pending":
+            self.metrics.unpriced_trigger_cancellations += 1
+        self._trigger_call_states[task] = "cancel_requested"
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+
+    def _cancel_retrieval_task(self, task: asyncio.Task) -> bool:
+        """Detach and request cancellation once for one retrieval task."""
+        if task.done() or task in self._retrieval_cancel_requested:
+            return False
+        self._retrieval_cancel_requested.add(task)
+        self.metrics.retrieval_cancellations += 1
+        if self._retrieval_task is task:
+            self._retrieval_task = None
+            self._retrieval_query = None
+            self._retrieval_source_text = None
+            self._retrieval_controller_validated = True
+            self._retrieval_commit_safe_exact = False
+            self._pending_promotion = None
+        task.cancel()
+        self._track_cleanup(task)
+        return True
 
     async def _cancel_active_retrieval(self) -> None:
         self._pending_promotion = None
         if not self._active(self._retrieval_task):
             return
-        self.metrics.retrieval_cancellations += 1
         task = self._retrieval_task
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        if self._cancel_retrieval_task(task):
+            await asyncio.sleep(0)
 
-    def _record_endpoint_plan(self, plan: EndpointPlanResult) -> None:
-        self.metrics.trigger_usage.add(plan.controller_usage)
-        self.metrics.trigger_calls += plan.controller_calls
-        self.metrics.trigger_timeouts += plan.controller_timeouts
-        self.metrics.controller_failures += plan.controller_failures
-        self.metrics.trigger_elapsed_ms += plan.controller_elapsed_ms
+    async def _promote_exact_commit_work(
+        self,
+        snapshot: InputSnapshot,
+    ) -> RetrievalEvidence | None:
+        """Promote work only when its source text exactly matches Send."""
+        evidence = self.evidence
+        if (
+            evidence is not None
+            and (evidence.controller_validated or evidence.commit_safe_exact)
+            and evidence.source_text == snapshot.text
+        ):
+            return self._exact_evidence(snapshot)
 
-    async def _commit_with_final_plan(
+        retrieval_task = self._retrieval_task
+        retrieval_query = self._retrieval_query
+        retrieval_source = self._retrieval_source_text
+        promotion = self._pending_promotion
+        validation_text = (
+            promotion.snapshot.text
+            if promotion is not None
+            and retrieval_query is not None
+            and self._same_query(promotion.query, retrieval_query)
+            else retrieval_source
+            if self._retrieval_controller_validated or self._retrieval_commit_safe_exact
+            else None
+        )
+        if (
+            self._active(retrieval_task)
+            and retrieval_query is not None
+            and validation_text is not None
+            and validation_text == snapshot.text
+        ):
+            self._pending_promotion = EvidencePromotion(
+                snapshot=snapshot,
+                query=retrieval_query,
+                validated_ms=time.perf_counter() * 1000,
+            )
+            self.metrics.evidence_revalidations += 1
+            await self.send(
+                {
+                    "type": "retrieval.revalidated",
+                    "revision": snapshot.revision,
+                    "query": retrieval_query,
+                    "state": "exact_in_flight_at_commit",
+                }
+            )
+            await asyncio.shield(retrieval_task)
+            return self._exact_evidence(snapshot)
+        return None
+
+    async def _commit_with_exact_fallback(
         self,
         snapshot: InputSnapshot,
     ) -> RetrievalEvidence:
-        """Validate speculative work against the complete committed input."""
+        """Search the immutable committed text once when speculation cannot be reused."""
         await self._stop_trigger_for_commit()
-        previous_query = self._validation_candidate_query(snapshot)
-        try:
-            plan = await self.endpoint_plan(snapshot, previous_query)
-        except Exception:
-            self.metrics.endpoint_failures += 1
-            raise
-        self._record_endpoint_plan(plan)
-        final_query = plan.query
-        self.previous_query = final_query
-        await self.send(
-            {
-                "type": "trigger.decision",
-                "revision": snapshot.revision,
-                "action": plan.decision_action,
-                "query": final_query,
-                "is_commit": True,
-                "elapsed_ms": round(plan.controller_elapsed_ms, 2),
-            }
-        )
-
-        # The complete-input controller, not prefix similarity alone, decides
-        # whether already-ready or in-flight retrieval still matches the commit.
-        await self._revalidate_query(snapshot, final_query, commit_validation=True)
-        exact = self._exact_evidence(snapshot)
-        if exact is not None:
-            if self._active(self._retrieval_task) and not self._same_query(
-                self._retrieval_query or "", final_query
-            ):
-                await self._cancel_active_retrieval()
-            return await self._accept(exact, from_fallback=False)
-
-        retrieval_task = self._retrieval_task
-        if (
-            self._active(retrieval_task)
-            and self._retrieval_query is not None
-            and self._same_query(self._retrieval_query, final_query)
-        ):
-            await asyncio.shield(retrieval_task)
-            exact = self._exact_evidence(snapshot)
-            if exact is not None:
-                return await self._accept(exact, from_fallback=False)
-
-        # A different speculative query must not overlap or warm the one final
-        # retrieval attempt that both paths receive after their final decision.
         await self._cancel_active_retrieval()
         self.metrics.commit_fallbacks += 1
         await self.send(
             {
                 "type": "retrieval.fallback",
                 "revision": snapshot.revision,
-                "query": final_query,
+                "query": snapshot.text,
             }
         )
-        evidence = await self._direct_commit_retrieval(snapshot, final_query)
+        evidence = await self._direct_commit_retrieval(snapshot)
         return await self._accept(evidence, from_fallback=True)
 
     async def commit(self, snapshot: InputSnapshot) -> RetrievalEvidence:
@@ -881,16 +1046,28 @@ class StreamCoordinator:
             await self._stop_remaining_speculation()
             return await self._accept(exact, from_fallback=False)
 
-        return await self._commit_with_final_plan(snapshot)
+        exact = await self._promote_exact_commit_work(snapshot)
+        if exact is not None:
+            await self._stop_remaining_speculation()
+            return await self._accept(exact, from_fallback=False)
+
+        return await self._commit_with_exact_fallback(snapshot)
 
     async def close(self) -> None:
         self._closed = True
         self._pending_snapshot = None
         self._pending_promotion = None
-        for task in (self._trigger_task, self._retrieval_task):
-            if task and not task.done():
+        tasks = {
+            task
+            for task in (
+                self._trigger_task,
+                self._retrieval_task,
+                self._quiet_task,
+                *self._cleanup_tasks,
+            )
+            if task is not None
+        }
+        for task in tasks:
+            if task and not task.done() and task not in self._retrieval_cancel_requested:
                 task.cancel()
-        await asyncio.gather(
-            *(task for task in (self._trigger_task, self._retrieval_task) if task),
-            return_exceptions=True,
-        )
+        await asyncio.gather(*tasks, return_exceptions=True)

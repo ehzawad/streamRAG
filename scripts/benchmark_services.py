@@ -40,6 +40,7 @@ IDENTITY_FIELDS = (
     "indexed_desired_chunks",
     "index_version",
     "index_checksum",
+    "index_metadata_ready",
     "dataset_checksums_valid",
     "index_source_sha256",
     "current_index_source_sha256",
@@ -201,9 +202,11 @@ def require_development_candidate(dataset_dir: Path) -> dict[str, Any]:
         ]
     except json.JSONDecodeError as exc:
         raise RuntimeError("development queries are invalid JSONL") from exc
-    expected_count = json.loads(
-        (dataset_dir / "dataset_summary.json").read_text(encoding="utf-8")
-    ).get("selection", {}).get("dev_questions")
+    expected_count = (
+        json.loads((dataset_dir / "dataset_summary.json").read_text(encoding="utf-8"))
+        .get("selection", {})
+        .get("dev_questions")
+    )
     if not dev_rows or len(dev_rows) != expected_count:
         raise RuntimeError("development query count does not match dataset summary")
     if any(not str(row.get("id") or "").startswith("crag-text-dev-") for row in dev_rows):
@@ -352,6 +355,8 @@ def validate_status(
         raise RuntimeError(f"{name} status is missing benchmark identities: {missing}")
     if require_index and status.get("dataset_checksums_valid") is not True:
         raise RuntimeError(f"{name} dataset checksum validation failed")
+    if require_index and status.get("index_metadata_ready") is not True:
+        raise RuntimeError(f"{name} index metadata is not finalized and ready")
     if require_index and status.get("index_matches_current_corpus") is not True:
         raise RuntimeError(f"{name} index does not match the current corpus/config")
     if require_index and int(status["indexed_chunks"]) != int(status["indexed_desired_chunks"]):

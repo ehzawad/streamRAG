@@ -3,9 +3,9 @@
 > **Status: PENDING HUMAN REVIEW.** Do not freeze or run the unseen test split
 > until every item and the global-corpus construction have been reviewed.
 
-This candidate is deliberately text-first: cumulative dirty text is sampled every
-400 ms only at ticks strictly before Send. The commit carries final text as a higher
-revision; speech-only gains are out of scope.
+This candidate is deliberately text-first: changed-only cumulative dirty text is
+sampled every 400 ms before Send; unchanged ticks emit no snapshot. The commit
+carries final text as a higher revision; speech-only gains are out of scope.
 
 ## crag-text-dev-001 — dev
 

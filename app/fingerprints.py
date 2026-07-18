@@ -5,7 +5,12 @@ import json
 from pathlib import Path
 
 from app.config import Settings
-from app.data.crag import resolve_documents_path, sha256_file
+from app.data.crag import (
+    VerifiedDatasetSnapshot,
+    capture_dataset_snapshot,
+    resolve_documents_path,
+    sha256_file,
+)
 
 DATASET_FINGERPRINT_FILES = (
     "checksums.sha256",
@@ -44,6 +49,7 @@ CONFIG_FINGERPRINT_FIELDS = (
     "trigger_interval_ms",
     "trigger_max_presubmit_calls",
     "parallel_raw_retrieval",
+    "settled_draft_delay_ms",
     "trigger_timeout_s",
     "retrieval_timeout_s",
     "answer_timeout_s",
@@ -52,22 +58,34 @@ CONFIG_FINGERPRINT_FIELDS = (
 )
 
 
-def _combined_file_hash(root: Path, names: tuple[str, ...]) -> str:
+def _combined_snapshot_hash(
+    snapshot: VerifiedDatasetSnapshot,
+    names: tuple[str, ...],
+) -> str:
+    checksums = snapshot.checksums()
     digest = hashlib.sha256()
     for name in names:
-        path = root / name
         digest.update(name.encode("utf-8"))
         digest.update(b"\0")
-        digest.update((sha256_file(path) if path.is_file() else "missing").encode("ascii"))
+        file_checksum = (
+            snapshot.serving_dataset_checksum
+            if name == "checksums.sha256"
+            else checksums.get(name, "missing")
+        )
+        digest.update(file_checksum.encode("ascii"))
         digest.update(b"\n")
     return digest.hexdigest()
 
 
-def _source_tree_hash(root: Path) -> str:
+def backend_source_sha256(root: Path) -> str:
+    """Hash every executable backend source file and its dependency lock surface."""
+
     files = sorted((root / "app").rglob("*.py"))
-    pyproject = root / "pyproject.toml"
-    if pyproject.is_file():
-        files.append(pyproject)
+    files.extend(
+        path
+        for name in ("pyproject.toml", "uv.lock", ".python-version")
+        if (path := root / name).is_file()
+    )
     digest = hashlib.sha256()
     for path in files:
         digest.update(str(path.relative_to(root)).encode("utf-8"))
@@ -77,45 +95,62 @@ def _source_tree_hash(root: Path) -> str:
     return digest.hexdigest()
 
 
-def runtime_fingerprints(settings: Settings) -> dict[str, str]:
-    """Return non-secret, content-addressed identities for benchmark provenance."""
+def config_sha256(settings: Settings) -> str:
+    """Hash every non-secret runtime setting that can affect benchmark behavior."""
+
     config = {name: getattr(settings, name) for name in CONFIG_FINGERPRINT_FIELDS}
-    config_hash = hashlib.sha256(
+    return hashlib.sha256(
         json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    manifest = settings.dataset_dir / "checksums.sha256"
-    documents = resolve_documents_path(settings.dataset_dir)
-    serving_dataset_checksum = sha256_file(manifest) if manifest.is_file() else "missing"
-    inference_path = settings.dataset_dir / "inference_bundle.json"
-    if inference_path.is_file():
-        inference = json.loads(inference_path.read_text(encoding="utf-8"))
-        dataset_checksum = str(inference.get("evaluation_manifest_sha256") or "invalid")
-        freeze_id = str(inference.get("freeze_id") or "invalid")
-        fingerprint_files = (*INFERENCE_FINGERPRINT_FILES, documents.name)
+
+
+def dataset_fingerprints(
+    settings: Settings,
+    snapshot: VerifiedDatasetSnapshot | None = None,
+) -> dict[str, str]:
+    """Derive dataset identities from one checksum-verified byte snapshot."""
+    snapshot = snapshot or capture_dataset_snapshot(settings.dataset_dir)
+    if "inference_bundle.json" in snapshot.checksums():
+        fingerprint_files = (*INFERENCE_FINGERPRINT_FILES, snapshot.documents_filename)
     else:
-        dataset_checksum = serving_dataset_checksum
-        freeze_id = hashlib.sha256(
-            b"typed-streamrag-eval-freeze-v1\0" + dataset_checksum.encode("ascii")
-        ).hexdigest()
-        fingerprint_files = (*DATASET_FINGERPRINT_FILES, documents.name)
+        fingerprint_files = (*DATASET_FINGERPRINT_FILES, snapshot.documents_filename)
     return {
-        "backend_source_sha256": _source_tree_hash(settings.root),
-        "config_hash": config_hash,
-        "dataset_checksum": dataset_checksum,
-        "serving_dataset_checksum": serving_dataset_checksum,
-        "freeze_id": freeze_id,
-        "dataset_sha256": _combined_file_hash(
-            settings.dataset_dir,
+        "dataset_checksum": snapshot.dataset_checksum,
+        "serving_dataset_checksum": snapshot.serving_dataset_checksum,
+        "freeze_id": snapshot.freeze_id,
+        "dataset_sha256": _combined_snapshot_hash(
+            snapshot,
             fingerprint_files,
         ),
-        "documents_sha256": sha256_file(documents),
+        "documents_sha256": snapshot.documents_sha256,
+    }
+
+
+def runtime_fingerprints(settings: Settings) -> dict[str, str]:
+    """Return the startup identities for benchmark provenance."""
+    snapshot = capture_dataset_snapshot(settings.dataset_dir)
+    return {
+        "backend_source_sha256": backend_source_sha256(settings.root),
+        "config_hash": config_sha256(settings),
+        **dataset_fingerprints(settings, snapshot),
     }
 
 
 def index_source_sha256(settings: Settings) -> str:
     """Bind an index sync to its corpus and every index-shaping setting."""
+    return index_source_sha256_for_documents(
+        settings,
+        sha256_file(resolve_documents_path(settings.dataset_dir)),
+    )
+
+
+def index_source_sha256_for_documents(
+    settings: Settings,
+    documents_sha256: str,
+) -> str:
+    """Bind index settings to a caller-supplied, already captured corpus digest."""
     payload = {
-        "documents_sha256": sha256_file(resolve_documents_path(settings.dataset_dir)),
+        "documents_sha256": documents_sha256,
         "embedding_model": settings.embedding_model,
         "embedding_dimensions": settings.embedding_dimensions,
         "chunk_tokens": settings.chunk_tokens,

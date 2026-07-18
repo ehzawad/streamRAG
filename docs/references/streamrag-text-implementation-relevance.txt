@@ -26,29 +26,30 @@ What transfers from the paper
    The paper's model-triggered route evaluates fixed blocks/snapshots with an
    auxiliary model that either emits NO_QUERY or a new query. It does not equate
    typed input with one model call per keystroke. Our training-free typed scheduler
-   therefore applies deterministic word/time and meaningful-completed-prefix
-   eligibility first. At an eligible boundary it may start one quarantined raw
-   retrieval concurrently with a small structured model decision on the bounded
-   snapshot. The model validates, refines, or rejects that candidate, and the
-   complete-input gate validates it again before answering. The paper's appendix
-   reports roughly 4.7 trigger model calls per utterance at a 500 ms interval; our
-   call counts are measured rather than assumed equivalent.
+   therefore applies word/time and meaningful-prefix eligibility before a small
+   structured model decision on an evolving draft. Separately, if one delivered
+   changed draft remains unchanged for the locked 500 ms server interval, the
+   server starts deterministic retrieval with that exact text. The paper's
+   appendix reports roughly 4.7 trigger model calls per utterance at a 500 ms
+   interval; our call counts are measured rather than assumed equivalent.
 
 3. Threads and cancellation
    Speculative retrievals run asynchronously. To keep cost bounded, our small
-   implementation should allow at most one active/latest retrieval, cancel or
-   ignore stale work, and deduplicate identical normalized prefixes.
+   implementation allows at most one active retrieval, cancels stale work after a
+   correction or replacement query, and does not resend unchanged browser drafts.
 
-4. Cache
-   Cache each completed speculative query and its ranked document/chunk IDs so
-   useful early work can be reused after the user submits.
+4. Exact-source reuse
+   Pre-Send results stay provisional. Commit can reuse completed evidence, or
+   await retrieval already in flight, only when its recorded source text literally
+   equals the immutable committed text.
 
-5. Reflector / final validation
+5. Commit gate
    The paper's fixed-interval design checks whether an early query would provide
-   results consistent with the final query. Our typed adaptation will validate
-   the most recent speculative result after submit. If it is not sufficient or
-   consistent, Path B falls back to retrieval with the complete query. Final
-   answer generation uses validated evidence, not an unverified partial result.
+   results consistent with the final query. Our typed adaptation uses a stricter
+   rule: any appended, deleted, corrected, or otherwise different committed text
+   takes bounded retrieval with that exact text. An unfinished model decision and
+   mismatched speculation are cancelled. Final answer generation begins only
+   after Send and only with accepted evidence.
 
 6. Latency-accuracy-cost trade-off
    Earlier triggers can hide more latency but can issue irrelevant or redundant
@@ -75,9 +76,10 @@ Path A - Naive RAG
   Wait for submit -> embed/retrieve full query -> generate grounded answer.
 
 Path B - typed StreamRAG
-  Receive partial prefixes -> deterministic meaningful-prefix eligibility may
-  start raw retrieval alongside model validation -> quarantine the latest useful
-  result -> validate/fallback on submit -> generate one grounded streamed answer.
+  Receive changed partial prefixes -> use the model trigger while text evolves ->
+  start exact retrieval after one draft is unchanged for 500 ms -> quarantine the
+  result -> literal-exact reuse/in-flight completion or exact fallback at Send ->
+  generate one grounded streamed answer.
 
 For a fair comparison, both paths must use the same corpus, chunks, embedding
 model, vector index, top-k, final answer model, answer prompt, expected answers,
