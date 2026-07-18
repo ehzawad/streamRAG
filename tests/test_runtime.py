@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 
 import pytest
 
-from app.api.runtime import RagRuntime, TurnClosedError, TurnConflictError
+from app.api.runtime import PathTelemetry, RagRuntime, TurnClosedError, TurnConflictError
 from app.api.schemas import CommitRequest, SnapshotRequest
 from app.config import Settings
 from app.models import InputSnapshot, SearchResult, TriggerDecision, Usage
@@ -58,6 +60,288 @@ def runtime(store: RecordingStore, trigger: RecordingTrigger) -> RagRuntime:
 class ConversationAgentStub:
     async def conversation_context(self, _session_key: str) -> str:
         return ""
+
+
+class RecordingMetricLogger:
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    async def write(self, record: dict) -> None:
+        self.records.append(record)
+
+
+def answer_runtime(agent, settings: Settings) -> tuple[RagRuntime, RecordingMetricLogger]:
+    subject = runtime(RecordingStore(), RecordingTrigger())
+    metrics = RecordingMetricLogger()
+    subject.settings = settings
+    subject.agent = agent  # type: ignore[assignment]
+    subject.logger = metrics  # type: ignore[assignment]
+    return subject, metrics
+
+
+def answer_request() -> CommitRequest:
+    return CommitRequest(
+        session_id="session",
+        path="naive",
+        revision=1,
+        text="do-not-log-this-question",
+    )
+
+
+def answer_telemetry(now_ms: float) -> PathTelemetry:
+    return PathTelemetry(
+        result=SearchResult(
+            query="retrieval query",
+            hits=[],
+            embedding_tokens=0,
+            elapsed_ms=1.0,
+            cache_scope="session:naive",
+        ),
+        retrieval_started_ms=now_ms,
+        retrieval_ready_ms=now_ms,
+    )
+
+
+async def run_answer(subject: RagRuntime, events: list[dict]) -> None:
+    async def send(event: dict) -> None:
+        events.append(event)
+
+    now_ms = time.perf_counter() * 1000
+    await subject._answer(
+        run_id="run",
+        turn_id="turn",
+        path="naive",
+        request=answer_request(),
+        retrieval=answer_telemetry(now_ms),
+        committed_ms=now_ms,
+        request_started_ms=now_ms,
+        send=send,
+    )
+
+
+@pytest.mark.asyncio
+async def test_answer_ready_precedes_persistence_and_final_accounting() -> None:
+    class DelayedPersistenceAgent:
+        def __init__(self) -> None:
+            self.persistence_started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def stream(self, **_kwargs):
+            yield {"type": "answer.delta", "text": "grounded answer"}
+            yield {
+                "type": "agent.completed",
+                "answer": "grounded answer",
+                "usage": Usage(input_tokens=10, output_tokens=2, calls=1),
+                "tool_traces": [
+                    {
+                        "accounting_complete": True,
+                        "embedding_tokens": None,
+                        "sources": [
+                            {
+                                "chunk_id": "tool-source::c0001",
+                                "title": "Tool source",
+                                "url": "https://example.com/source",
+                                "score": 0.9,
+                            }
+                        ],
+                    }
+                ],
+            }
+            self.persistence_started.set()
+            await self.release.wait()
+            yield {
+                "type": "agent.persisted",
+                "usage": Usage(),
+                "compression_calls": 0,
+            }
+
+    agent = DelayedPersistenceAgent()
+    subject, metrics = answer_runtime(
+        agent,
+        Settings(
+            answer_timeout_s=0.01,
+            summary_timeout_s=0.05,
+            post_answer_persistence_timeout_s=0.2,
+        ),
+    )
+    events: list[dict] = []
+    task = asyncio.create_task(run_answer(subject, events))
+    await agent.persistence_started.wait()
+
+    assert [event["type"] for event in events] == [
+        "answer.started",
+        "answer.delta",
+        "answer.ready",
+    ]
+    ready = events[-1]
+    assert ready["answer"] == "grounded answer"
+    assert [source["chunk_id"] for source in ready["sources"]] == ["tool-source::c0001"]
+    assert ready["timing"]["submit_to_first_token_ms"] is not None
+    assert ready["timing"]["total_response_ms"] >= 0
+    assert ready["retrieval"] == {"cache_hit": False, "calls": 1}
+    assert ready["controller"] == {"calls": 0}
+    assert ready["reuse"]["mode"] == "commit_endpoint"
+    assert ready["estimated_cost_usd"]["accounting_complete"] is False
+    assert ready["estimated_cost_usd"]["query_embedding"] == 0
+    assert ready["estimated_cost_usd"]["unpriced_post_answer_persistence"] is True
+    await asyncio.sleep(0.03)
+    assert not task.done(), "post-answer work must not consume the answer deadline"
+    agent.release.set()
+    await task
+
+    record = metrics.records[0]
+    assert record["answer"] == "grounded answer"
+    assert record["persistence"]["status"] == "completed"
+    assert record["timing"]["post_answer_persistence_ms"] >= 25
+    assert record["timing"]["generation_ms"] < 20
+    assert record["timing"]["total_response_ms"] < record["timing"]["post_answer_persistence_ms"]
+    event_types = [event["type"] for event in events]
+    assert event_types.index("answer.ready") < event_types.index("answer.completed")
+    assert event_types[-1] == "answer.completed"
+
+
+@pytest.mark.asyncio
+async def test_generation_timeout_remains_a_path_failure() -> None:
+    class StalledGenerationAgent:
+        async def stream(self, **_kwargs):
+            await asyncio.Event().wait()
+            yield {"type": "unreachable"}
+
+    subject, metrics = answer_runtime(
+        StalledGenerationAgent(),
+        Settings(
+            answer_timeout_s=0.01,
+            summary_timeout_s=0.01,
+            post_answer_persistence_timeout_s=0.02,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="grounded answer timed out"):
+        await run_answer(subject, [])
+    assert metrics.records == []
+
+
+@pytest.mark.asyncio
+async def test_persistence_timeout_preserves_generated_answer(caplog) -> None:
+    class StalledPersistenceAgent:
+        async def stream(self, **_kwargs):
+            yield {
+                "type": "agent.completed",
+                "answer": "complete answer",
+                "usage": Usage(input_tokens=10, output_tokens=2, calls=1),
+                "tool_traces": [],
+            }
+            await asyncio.Event().wait()
+            yield {"type": "unreachable"}
+
+    subject, metrics = answer_runtime(
+        StalledPersistenceAgent(),
+        Settings(
+            answer_timeout_s=0.1,
+            summary_timeout_s=0.005,
+            post_answer_persistence_timeout_s=0.01,
+        ),
+    )
+    events: list[dict] = []
+
+    with caplog.at_level(logging.WARNING, logger="app.api.runtime"):
+        await run_answer(subject, events)
+
+    record = metrics.records[0]
+    assert record["answer"] == "complete answer"
+    assert record["persistence"]["status"] == "timeout"
+    assert record["estimated_cost_usd"]["accounting_complete"] is False
+    assert record["estimated_cost_usd"]["unpriced_post_answer_persistence"] is True
+    assert [event["type"] for event in events][-1] == "answer.completed"
+    assert "post-answer persistence timed out" in caplog.text
+    assert answer_request().text not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_persistence_failure_is_logged_without_losing_answer(caplog) -> None:
+    class FailingPersistenceAgent:
+        async def stream(self, **_kwargs):
+            yield {
+                "type": "agent.completed",
+                "answer": "complete answer",
+                "usage": Usage(input_tokens=10, output_tokens=2, calls=1),
+                "tool_traces": [],
+            }
+            raise RuntimeError("session database unavailable")
+
+    subject, metrics = answer_runtime(
+        FailingPersistenceAgent(),
+        Settings(
+            answer_timeout_s=0.1,
+            summary_timeout_s=0.01,
+            post_answer_persistence_timeout_s=0.02,
+        ),
+    )
+    events: list[dict] = []
+
+    with caplog.at_level(logging.ERROR, logger="app.api.runtime"):
+        await run_answer(subject, events)
+
+    assert metrics.records[0]["persistence"]["status"] == "failed"
+    assert events[-1]["type"] == "answer.completed"
+    assert events[-1]["answer"] == "complete answer"
+    assert "post-answer persistence failed" in caplog.text
+    assert answer_request().text not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_maintenance_cycle_recovers_each_operation_independently(caplog) -> None:
+    class FlakySessions:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def prune(self, _retention_hours: float) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("prune failed")
+
+    class MaintenanceAgent:
+        def __init__(self) -> None:
+            self.sessions = FlakySessions()
+
+    subject = runtime(RecordingStore(), RecordingTrigger())
+    agent = MaintenanceAgent()
+    subject.agent = agent  # type: ignore[assignment]
+    reap_calls = 0
+
+    async def flaky_reap() -> int:
+        nonlocal reap_calls
+        reap_calls += 1
+        if reap_calls == 1:
+            raise RuntimeError("reap failed")
+        return 0
+
+    subject.reap_idle_turns = flaky_reap  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR, logger="app.api.runtime"):
+        await subject._maintenance_cycle()
+        await subject._maintenance_cycle()
+
+    assert reap_calls == 2
+    assert agent.sessions.calls == 2
+    assert "idle-turn maintenance failed" in caplog.text
+    assert "session-pruning maintenance failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unexpected_maintenance_exit_is_observed(caplog) -> None:
+    subject = runtime(RecordingStore(), RecordingTrigger())
+
+    async def crash() -> None:
+        raise RuntimeError("maintenance crashed")
+
+    subject._maintenance_loop = crash  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR, logger="app.api.runtime"):
+        subject.start_maintenance()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    assert not subject.maintenance_tasks
+    assert "runtime maintenance loop crashed" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -162,6 +446,28 @@ async def test_endpoint_controller_failure_falls_back_to_exact_committed_text() 
 
 
 @pytest.mark.asyncio
+async def test_endpoint_controller_failure_bounds_oversized_fallback_query() -> None:
+    store = RecordingStore()
+    subject = runtime(store, RecordingTrigger(fail=True))
+    committed_text = f"start marker {'x' * 19_976} end marker"
+    assert len(committed_text) == 20_000
+    committed = InputSnapshot(turn_id="turn", revision=1, text=committed_text)
+
+    await subject._endpoint_retrieve(
+        committed,
+        session_id="session",
+        path="naive",
+        conversation_context="",
+    )
+
+    query, scope = store.calls[0]
+    assert len(query) == 2_000
+    assert query.startswith("start marker")
+    assert query.endswith("end marker")
+    assert scope == "session:naive"
+
+
+@pytest.mark.asyncio
 async def test_complete_input_plan_can_confirm_previous_stream_query() -> None:
     class KeepPreviousTrigger(RecordingTrigger):
         async def decide(self, **kwargs) -> TriggerResult:
@@ -183,9 +489,37 @@ async def test_complete_input_plan_can_confirm_previous_stream_query() -> None:
     )
 
     assert plan.query == "stable retrieval query"
-    assert plan.reused_previous is True
     assert plan.decision_action == "keep_previous"
     assert trigger.calls[0]["is_commit"] is True
+
+
+@pytest.mark.asyncio
+async def test_complete_input_plan_reuses_compatible_candidate_before_rewrite() -> None:
+    class CompatibleTrigger(RecordingTrigger):
+        async def decide(self, **kwargs) -> TriggerResult:
+            self.calls.append(kwargs)
+            return TriggerResult(
+                decision=TriggerDecision(
+                    action="retrieve",
+                    candidate_query_compatible=True,
+                    retrieval_query="cleaner rewritten query",
+                ),
+                usage=Usage(input_tokens=5, output_tokens=2, calls=1),
+                elapsed_ms=2.0,
+            )
+
+    trigger = CompatibleTrigger()
+    subject = runtime(RecordingStore(), trigger)
+    committed = InputSnapshot(turn_id="turn", revision=2, text="complete question?")
+
+    plan = await subject._endpoint_plan(
+        committed,
+        previous_query="already embedded candidate",
+        conversation_context="",
+    )
+
+    assert plan.query == "already embedded candidate"
+    assert plan.decision_action == "keep_previous"
 
 
 @pytest.mark.asyncio
@@ -238,9 +572,7 @@ async def test_commit_is_idempotent_and_late_snapshots_cannot_recreate_turn() ->
     first_run = await subject.start_commit("turn", request)
     duplicate_run = await subject.start_commit(
         "turn",
-        request.model_copy(
-            update={"client_ts_ms": 99.0, "query_time": "2026-01-01T00:00:01Z"}
-        ),
+        request.model_copy(update={"client_ts_ms": 99.0}),
     )
     await execution_started.wait()
 
@@ -255,6 +587,11 @@ async def test_commit_is_idempotent_and_late_snapshots_cannot_recreate_turn() ->
         await subject.start_commit(
             "turn",
             request.model_copy(update={"text": "different question?"}),
+        )
+    with pytest.raises(TurnConflictError):
+        await subject.start_commit(
+            "turn",
+            request.model_copy(update={"query_time": "2026-01-01T00:00:01Z"}),
         )
     await subject.cancel_turn("turn")
 
@@ -307,6 +644,18 @@ async def test_idle_uncommitted_turn_is_reaped() -> None:
     assert reaped == 1
     assert "idle-turn" not in subject.turns
     assert await subject.events.existing("turn:idle-turn") is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_tombstones_are_bounded() -> None:
+    subject = runtime(RecordingStore(), RecordingTrigger())
+    subject.terminal_turn_limit = 3
+
+    for ordinal in range(5):
+        await subject.cancel_turn(f"turn-{ordinal}")
+
+    assert list(subject.terminal_turns) == ["turn-2", "turn-3", "turn-4"]
+    assert all(reservation is None for reservation in subject.terminal_turns.values())
 
 
 @pytest.mark.asyncio

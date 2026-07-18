@@ -104,6 +104,18 @@ async def collect_sse(
         destination.append(event)
 
 
+async def collect_sse_after(
+    ready: asyncio.Event,
+    client: httpx.AsyncClient,
+    url: str,
+    source: str,
+    destination: list[dict[str, Any]],
+) -> None:
+    """Subscribe only after the first snapshot has created the turn channel."""
+    await ready.wait()
+    await collect_sse(client, url, source, destination)
+
+
 async def send_snapshot(
     client: httpx.AsyncClient,
     transport_lock: asyncio.Lock,
@@ -114,6 +126,7 @@ async def send_snapshot(
     text_value: str,
     case_started_ms: float,
     schedule: dict[str, Any],
+    turn_ready: asyncio.Event,
 ) -> None:
     try:
         async with transport_lock:
@@ -130,6 +143,7 @@ async def send_snapshot(
                 },
             )
             response.raise_for_status()
+            turn_ready.set()
             schedule["completed_offset_ms"] = round(time.perf_counter() * 1000 - case_started_ms, 3)
             schedule["transport_status"] = "completed"
     except asyncio.CancelledError:
@@ -267,13 +281,19 @@ async def replay_path(
     snapshot_schedule: list[dict[str, Any]] = []
     snapshot_tasks: list[asyncio.Task[None]] = []
     snapshot_transport_lock = asyncio.Lock()
-    turn_collector = asyncio.create_task(
-        collect_sse(
-            client,
-            f"{base_url}/v1/turns/{turn_id}/events",
-            "turn",
-            turn_events,
+    turn_ready = asyncio.Event()
+    turn_collector = (
+        asyncio.create_task(
+            collect_sse_after(
+                turn_ready,
+                client,
+                f"{base_url}/v1/turns/{turn_id}/events",
+                "turn",
+                turn_events,
+            )
         )
+        if path == "stream"
+        else None
     )
     await asyncio.sleep(0)
 
@@ -309,6 +329,7 @@ async def replay_path(
                             snapshot.text,
                             case_started_ms,
                             schedule,
+                            turn_ready,
                         )
                     )
                 )
@@ -420,10 +441,14 @@ async def replay_path(
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(*snapshot_tasks, return_exceptions=True)
-        _, pending = await asyncio.wait({turn_collector}, timeout=2.0)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(turn_collector, return_exceptions=True)
+        if turn_collector is not None:
+            if not turn_ready.is_set():
+                turn_collector.cancel()
+            else:
+                _, pending = await asyncio.wait({turn_collector}, timeout=2.0)
+                for task in pending:
+                    task.cancel()
+            await asyncio.gather(turn_collector, return_exceptions=True)
         if not case_completed:
             cleanup_task = asyncio.create_task(client.delete(f"{base_url}/v1/turns/{turn_id}"))
             try:

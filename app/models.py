@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+RETRIEVAL_QUERY_MAX_CHARS = 2_000
+
 
 class InputSnapshot(BaseModel):
     turn_id: str = Field(min_length=1, max_length=128)
@@ -15,7 +17,11 @@ class InputSnapshot(BaseModel):
 
 class TriggerDecision(BaseModel):
     action: Literal["wait", "retrieve", "keep_previous"]
-    retrieval_query: str | None = Field(default=None, max_length=2_000)
+    candidate_query_compatible: bool = False
+    retrieval_query: str | None = Field(
+        default=None,
+        max_length=RETRIEVAL_QUERY_MAX_CHARS,
+    )
 
     @model_validator(mode="after")
     def query_matches_action(self) -> TriggerDecision:
@@ -23,6 +29,10 @@ class TriggerDecision(BaseModel):
             raise ValueError("retrieve action requires retrieval_query")
         if self.action != "retrieve":
             self.retrieval_query = None
+        if self.action == "wait":
+            self.candidate_query_compatible = False
+        elif self.action == "keep_previous":
+            self.candidate_query_compatible = True
         return self
 
 

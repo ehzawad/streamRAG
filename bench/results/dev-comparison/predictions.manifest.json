@@ -1,10 +1,10 @@
 {
   "backend_instance_ids": {
-    "naive": "aeacf6c0-28c7-4bdb-adb2-e8424a0a75fc",
-    "stream": "579151e3-1075-417f-8218-14e0d9844ceb"
+    "naive": "34c41620-e00d-45f2-b3e5-3e1cd916e9b1",
+    "stream": "a206c939-b0d8-4684-8d87-6de8510f4667"
   },
   "benchmark_harness_sha256": {
-    "run_benchmark.py": "a5a9a07a8006251b5657f7edbc65e75cc32031d2d49ef2c88b57f737a7067d6e",
+    "run_benchmark.py": "1577178089ee98b0141dc909b9b941f43a7229c8816900d17c9411426f4bc830",
     "typed_trace.py": "7e71e10291452d49c93c34e9727be9deceb6eac66ae9692aa177732baedd29f4"
   },
   "cache_isolation": "unique session scope per repetition/query/path; separate service processes",
@@ -40,22 +40,22 @@
     "index_pipeline_version"
   ],
   "completed_outputs": 10,
-  "completed_unix_s": 1784336529.3658319,
-  "created_unix_s": 1784336346.9450839,
+  "completed_unix_s": 1784357747.484139,
+  "created_unix_s": 1784357555.821776,
   "data_status": {
     "naive": {
       "approval_status": "candidate_pending_human_review",
-      "backend_source_sha256": "02eb65f3cfd79dbecf3730cf7f246093fa48416e5922a873249a64f6c1d8163c",
-      "config_hash": "394c7b516937e6ded35bec0547787047b76b3562ece7cfdcfc9fbaaa6cea68a0",
+      "backend_source_sha256": "f43885948a713d94abb6c2f7289e8cb1cc250ddb4ee5cbd6caabf02593ef0225",
+      "config_hash": "d1dc885f8354dc46893597375f74810e7cc4b67ce3a3585c3ab78cfddb7ba0be",
       "current_index_source_sha256": "1c20c55d4ab58aa2c8621d60cae2d8dba5e41d0032a7218ac8ec0a19b64bfedf",
-      "dataset_checksum": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+      "dataset_checksum": "8fd5d94b1a51516a042592884caba89ab617f178fc47a6c80f715a2323531c43",
       "dataset_checksum_error": null,
       "dataset_checksums_valid": true,
-      "dataset_sha256": "bf4656aa04dc47706f2412f074c2e55582dd4b91522da3d45175ff1e4e0ebe99",
+      "dataset_sha256": "3695a7fb8351835c5eefc93c046ab481e96eee4de483fbc487a730218b5c9bca",
       "dataset_verified_files": 9,
       "documents_sha256": "0add526d0c4528c28a9eb61cab7523680d4ea931c27a671998e17ef42eed1c64",
       "embedding_model": "text-embedding-3-large",
-      "freeze_id": "058ef3d4bb235f85341b4193cd677dabe7cabed8a749198e6ff58bb75ff779f5",
+      "freeze_id": "9c2e1865c710bf6c4ded5d5a93f87af5d1d2d04e1ec2513beff6ef1ea8aecd6b",
       "index_checksum": "b3aebe0ddbc5df1778f4056169e1b604a69d93434b8369fb9fe7dc8e59621a8d",
       "index_matches_current_corpus": true,
       "index_pipeline_version": "typed-crag-dedup-chunk-payload-v2",
@@ -63,27 +63,27 @@
       "index_version": 1,
       "indexed_chunks": 1000,
       "indexed_desired_chunks": 1000,
-      "instance_id": "aeacf6c0-28c7-4bdb-adb2-e8424a0a75fc",
+      "instance_id": "34c41620-e00d-45f2-b3e5-3e1cd916e9b1",
       "model": "gpt-5.6-sol",
       "reasoning_effort": "medium",
       "service_tier": "default",
-      "serving_dataset_checksum": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+      "serving_dataset_checksum": "8fd5d94b1a51516a042592884caba89ab617f178fc47a6c80f715a2323531c43",
       "summary_reasoning_effort": "low",
       "trigger_reasoning_effort": "low"
     },
     "stream": {
       "approval_status": "candidate_pending_human_review",
-      "backend_source_sha256": "02eb65f3cfd79dbecf3730cf7f246093fa48416e5922a873249a64f6c1d8163c",
-      "config_hash": "394c7b516937e6ded35bec0547787047b76b3562ece7cfdcfc9fbaaa6cea68a0",
+      "backend_source_sha256": "f43885948a713d94abb6c2f7289e8cb1cc250ddb4ee5cbd6caabf02593ef0225",
+      "config_hash": "d1dc885f8354dc46893597375f74810e7cc4b67ce3a3585c3ab78cfddb7ba0be",
       "current_index_source_sha256": "1c20c55d4ab58aa2c8621d60cae2d8dba5e41d0032a7218ac8ec0a19b64bfedf",
-      "dataset_checksum": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+      "dataset_checksum": "8fd5d94b1a51516a042592884caba89ab617f178fc47a6c80f715a2323531c43",
       "dataset_checksum_error": null,
       "dataset_checksums_valid": true,
-      "dataset_sha256": "bf4656aa04dc47706f2412f074c2e55582dd4b91522da3d45175ff1e4e0ebe99",
+      "dataset_sha256": "3695a7fb8351835c5eefc93c046ab481e96eee4de483fbc487a730218b5c9bca",
       "dataset_verified_files": 9,
       "documents_sha256": "0add526d0c4528c28a9eb61cab7523680d4ea931c27a671998e17ef42eed1c64",
       "embedding_model": "text-embedding-3-large",
-      "freeze_id": "058ef3d4bb235f85341b4193cd677dabe7cabed8a749198e6ff58bb75ff779f5",
+      "freeze_id": "9c2e1865c710bf6c4ded5d5a93f87af5d1d2d04e1ec2513beff6ef1ea8aecd6b",
       "index_checksum": "b3aebe0ddbc5df1778f4056169e1b604a69d93434b8369fb9fe7dc8e59621a8d",
       "index_matches_current_corpus": true,
       "index_pipeline_version": "typed-crag-dedup-chunk-payload-v2",
@@ -91,11 +91,11 @@
       "index_version": 1,
       "indexed_chunks": 1000,
       "indexed_desired_chunks": 1000,
-      "instance_id": "579151e3-1075-417f-8218-14e0d9844ceb",
+      "instance_id": "a206c939-b0d8-4684-8d87-6de8510f4667",
       "model": "gpt-5.6-sol",
       "reasoning_effort": "medium",
       "service_tier": "default",
-      "serving_dataset_checksum": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+      "serving_dataset_checksum": "8fd5d94b1a51516a042592884caba89ab617f178fc47a6c80f715a2323531c43",
       "summary_reasoning_effort": "low",
       "trigger_reasoning_effort": "low"
     }
@@ -115,7 +115,7 @@
   "prediction_rows_expected": 10,
   "prediction_rows_observed": 10,
   "predictions": "predictions.jsonl",
-  "predictions_sha256": "77506ddb360b03a28ada2ad18a209a573c679af607b41ccaf6a16020364674c9",
+  "predictions_sha256": "0e15bc1320a91a8497a8c47e61907a6d197e201637447f36f84e15efab5c5e0c",
   "preregistered_protocol_gate": {
     "required_measured_repetitions": 1,
     "required_query_count": 10,
@@ -141,14 +141,14 @@
   "repetitions": 1,
   "reportable": false,
   "run_status": "completed_non_reportable",
-  "run_tag": "5fd3adbd14",
+  "run_tag": "a7bd28eb32",
   "schema_version": 4,
   "scorer_isolation": {
     "binding": "query SHA-256 plus opaque evaluation freeze_id",
     "runner_gold_access": "forbidden"
   },
   "serving_checksum_manifest": "../../../data/crag_eval/checksums.sha256",
-  "serving_checksum_manifest_sha256": "b0734fcdcd1ee2bc178fb207f3db3e6301e01fc03bdf9386319c4d9294e89cb2",
+  "serving_checksum_manifest_sha256": "8fd5d94b1a51516a042592884caba89ab617f178fc47a6c80f715a2323531c43",
   "smoke_non_reportable": true,
   "snapshot_transport_gate": {
     "async_sends_do_not_delay_commit": true,
@@ -171,7 +171,7 @@
   },
   "timing_drift_gate": {
     "max_allowed_abs_drift_ms": 100.0,
-    "max_observed_abs_drift_ms": 2.224993688720133,
+    "max_observed_abs_drift_ms": 2.268886600222686,
     "observations": 10,
     "status": "complete",
     "violations": 0

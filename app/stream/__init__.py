@@ -1,1 +1,1 @@
-"""Typed snapshot analysis and model-triggered retrieval coordination."""
+"""Typed snapshot analysis and commit-safe speculative retrieval."""

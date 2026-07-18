@@ -35,6 +35,16 @@ class SlowFakeEmbedder(FakeEmbedder):
         return await super().embed(texts)
 
 
+class CountingIndexStateRepository(IndexStateRepository):
+    def __init__(self, path):
+        super().__init__(path)
+        self.version_reads = 0
+
+    async def version(self, collection: str) -> int:
+        self.version_reads += 1
+        return await super().version(collection)
+
+
 def chunk(chunk_id: str, text: str) -> Chunk:
     return Chunk(
         chunk_id=chunk_id,
@@ -111,7 +121,8 @@ async def test_search_cache_isolated_by_scope_and_reports_fresh_metrics(tmp_path
         embedding_dimensions=8,
     )
     embedder = SlowFakeEmbedder()
-    store = QdrantVectorStore(config, embedder, IndexStateRepository(config.runtime_db))
+    state = CountingIndexStateRepository(config.runtime_db)
+    store = QdrantVectorStore(config, embedder, state)
     await store.setup()
     try:
         await store.sync(
@@ -159,6 +170,7 @@ async def test_search_cache_isolated_by_scope_and_reports_fresh_metrics(tmp_path
         assert [hit.chunk.chunk_id for hit in naive_hit.hits] == [
             hit.chunk.chunk_id for hit in naive_miss.hits
         ]
+        assert state.version_reads == 1
     finally:
         await store.close()
 

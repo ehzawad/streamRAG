@@ -24,6 +24,12 @@ def test_health_and_dataset_gate(tmp_path: Path, monkeypatch: MonkeyPatch) -> No
         assert health.json()["summary_reasoning_effort"] == "low"
         assert client.get("/v1/turns/unknown/events").status_code == 404
         assert client.get("/v1/runs/unknown/events").status_code == 404
+        for endpoint in ("/v1/turns/unknown/events", "/v1/runs/unknown/events"):
+            malformed = client.get(endpoint, headers={"Last-Event-ID": "not-an-integer"})
+            assert malformed.status_code == 400
+            assert "non-negative integer" in malformed.json()["detail"]
+            negative = client.get(endpoint, headers={"Last-Event-ID": "-1"})
+            assert negative.status_code == 400
         blocked = client.post("/v1/data/sync")
         assert blocked.status_code == 409
         assert "not human-approved" in blocked.json()["detail"]

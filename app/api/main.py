@@ -78,6 +78,24 @@ app.add_middleware(
 )
 
 
+def _event_cursor(last_event_id: str | None) -> int:
+    if last_event_id is None:
+        return 0
+    try:
+        cursor = int(last_event_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Last-Event-ID must be a non-negative integer",
+        ) from exc
+    if cursor < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Last-Event-ID must be a non-negative integer",
+        )
+    return cursor
+
+
 @app.get("/")
 async def root() -> dict:
     return {"service": "typed-streamrag-api", "docs": "/docs", "health": "/v1/health"}
@@ -238,10 +256,10 @@ async def turn_events(
     request: Request,
     last_event_id: str | None = Header(default=None),
 ) -> EventSourceResponse:
+    after = _event_cursor(last_event_id)
     channel = await app.state.runtime.events.existing(f"turn:{turn_id}")
     if channel is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown turn")
-    after = int(last_event_id or 0)
     return EventSourceResponse(channel.subscribe(after), ping=15)
 
 
@@ -279,10 +297,10 @@ async def run_events(
     request: Request,
     last_event_id: str | None = Header(default=None),
 ) -> EventSourceResponse:
+    after = _event_cursor(last_event_id)
     channel = await app.state.runtime.events.existing(f"run:{run_id}")
     if channel is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown run")
-    after = int(last_event_id or 0)
     return EventSourceResponse(channel.subscribe(after), ping=15)
 
 

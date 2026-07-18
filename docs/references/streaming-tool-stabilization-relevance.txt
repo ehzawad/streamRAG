@@ -67,8 +67,9 @@ fixed test set.
 
 Implementation decisions it supports
 ------------------------------------
-- Use deterministic fixed/debounced eligibility plus a zero-shot structured
-  model decision, not a trained trigger.
+- Use deterministic fixed/debounced meaningful-prefix eligibility to start at
+  most one quarantined raw retrieval alongside a zero-shot structured model
+  decision, not a trained trigger.
 - Start only after a minimum meaningful prefix.
 - Keep the most recent useful completed retrieval in cache.
 - Cancel or ignore stale retrievals when the prefix changes materially.
@@ -95,12 +96,14 @@ late disambiguation, speculative misfires and wasted calls.
 
 Observed development check
 --------------------------
-The five-question development run preserved answer/support correctness on both
-paths. Stream won all three candidate early-stabilization pairs with a median
-paired TTFT delta of -2,054.847 ms, but lost the single late-stabilization and
-single revision/ambiguity pairs. That small result supports the paper's diagnostic
-framing but is not a test-set conclusion; all 10 unseen queries remain frozen
-behind human approval.
+The retained five-question development run preserved answer/support correctness on
+both paths. Stream won all three candidate early-stabilization pairs with a median
+paired TTFT delta of -3,104.281 ms. It lost the single late-stabilization pair by
++464.497 ms and won the single revision/ambiguity pair by -478.590 ms. The latter
+two slices each contain only one item, and all accepted evidence lead-at-commit
+values were zero, so this small live result neither proves the labels nor a causal
+or universal speedup. It is not a test-set conclusion; all 10 unseen queries remain
+sealed behind human approval.
 
 Relationship among the three documents
 --------------------------------------

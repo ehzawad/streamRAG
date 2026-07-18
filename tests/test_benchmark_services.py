@@ -17,6 +17,7 @@ child_environment = benchmark_services.child_environment
 compare_statuses = benchmark_services.compare_statuses
 instances = benchmark_services.instances
 require_approved_dataset = benchmark_services.require_approved_dataset
+require_development_candidate = benchmark_services.require_development_candidate
 validate_status = benchmark_services.validate_status
 freeze_id = benchmark_services.freeze_id
 
@@ -51,6 +52,45 @@ def approved_dataset(root: Path, status: str = "approved_frozen") -> Path:
     checksums = []
     for path in sorted(root.iterdir()):
         checksums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")
+    (root / "checksums.sha256").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+    return root
+
+
+def development_dataset(
+    root: Path,
+    *,
+    status: str = "candidate_pending_human_review",
+    query_ids: tuple[str, ...] = ("crag-text-dev-001", "crag-text-dev-002"),
+) -> Path:
+    root.mkdir()
+    (root / "dataset_summary.json").write_text(
+        json.dumps(
+            {
+                "selection": {
+                    "approval_status": status,
+                    "dev_questions": len(query_ids),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "dev_queries.jsonl").write_text(
+        "".join(
+            json.dumps({"id": query_id, "query": "development only"}) + "\n"
+            for query_id in query_ids
+        ),
+        encoding="utf-8",
+    )
+    (root / "documents.jsonl").write_text("{}\n", encoding="utf-8")
+    (root / "selection_manifest.json").write_text("{}\n", encoding="utf-8")
+    # The canonical evaluation directory also contains unseen queries and gold.
+    # Development service validation checks their hashes but never selects them.
+    (root / "test_queries.jsonl").write_text("{}\n", encoding="utf-8")
+    (root / "test_gold.jsonl").write_text("{}\n", encoding="utf-8")
+    checksums = [
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+        for path in sorted(root.iterdir())
+    ]
     (root / "checksums.sha256").write_text("\n".join(checksums) + "\n", encoding="utf-8")
     return root
 
@@ -90,6 +130,54 @@ def test_approval_gate_never_accepts_candidate_data(tmp_path: Path) -> None:
         require_approved_dataset(dataset_dir)
 
 
+def test_development_mode_accepts_only_checksummed_dev_candidate(tmp_path: Path) -> None:
+    dataset_dir = development_dataset(tmp_path / "dataset")
+    contract = require_development_candidate(dataset_dir)
+
+    assert contract["approval_status"] == "candidate_pending_human_review"
+    assert contract["bundle_role"] == "development_candidate"
+    assert contract["serving_dataset_checksum"] == hashlib.sha256(
+        (dataset_dir / "checksums.sha256").read_bytes()
+    ).hexdigest()
+
+
+def test_development_mode_refuses_approved_or_non_dev_inputs(tmp_path: Path) -> None:
+    approved = development_dataset(tmp_path / "approved", status="approved_frozen")
+    with pytest.raises(RuntimeError, match="requires 'candidate_pending_human_review'"):
+        require_development_candidate(approved)
+
+    wrong_split = development_dataset(
+        tmp_path / "wrong-split",
+        query_ids=("crag-text-test-001",),
+    )
+    with pytest.raises(RuntimeError, match="non-development ID"):
+        require_development_candidate(wrong_split)
+
+
+def test_development_mode_refuses_checksum_drift(tmp_path: Path) -> None:
+    dataset_dir = development_dataset(tmp_path / "dataset")
+    (dataset_dir / "documents.jsonl").write_text('{"changed": true}\n', encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        require_development_candidate(dataset_dir)
+
+
+def test_development_status_must_match_candidate_contract(tmp_path: Path) -> None:
+    contract = require_development_candidate(development_dataset(tmp_path / "dataset"))
+    status = {
+        "approval_status": contract["approval_status"],
+        "dataset_checksum": contract["evaluation_manifest_sha256"],
+        "serving_dataset_checksum": contract["serving_dataset_checksum"],
+        "freeze_id": contract["freeze_id"],
+        "documents_sha256": contract["documents_sha256"],
+    }
+    validate_status(status, "dev", require_index=False, contract=contract)
+
+    status["approval_status"] = "approved_frozen"
+    with pytest.raises(RuntimeError, match="candidate_pending_human_review"):
+        validate_status(status, "dev", require_index=False, contract=contract)
+
+
 def test_instances_and_child_state_are_isolated(tmp_path: Path) -> None:
     dataset_dir = approved_dataset(tmp_path / "dataset")
     naive, stream = instances(service_args(tmp_path, dataset_dir))
@@ -103,6 +191,8 @@ def test_instances_and_child_state_are_isolated(tmp_path: Path) -> None:
     assert naive_env["QDRANT_PATH"] != stream_env["QDRANT_PATH"]
     assert naive_env["RUNTIME_DB"] != stream_env["RUNTIME_DB"]
     assert naive_env["METRICS_LOG"] != stream_env["METRICS_LOG"]
+    dev_env = child_environment(dataset_dir, naive, allow_unreviewed_dataset=True)
+    assert dev_env["ALLOW_UNREVIEWED_DATASET"] == "1"
 
 
 def test_same_port_is_rejected(tmp_path: Path) -> None:

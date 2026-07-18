@@ -1,7 +1,10 @@
+import { SSE_EVENT_TYPES } from "./runLifecycle";
+
 export type PathName = "naive" | "stream" | "compare";
 
 export type BackendEvent = {
   type: string;
+  run_id?: string;
   path?: "naive" | "stream";
   text?: string;
   answer?: string;
@@ -34,6 +37,7 @@ export type BackendEvent = {
   tool_traces?: unknown[];
   ready_before_commit?: boolean;
   retrieval_completed_before_commit?: boolean;
+  candidate?: boolean;
   estimated_cost_usd?: { total: number; accounting_complete: boolean };
 };
 
@@ -151,28 +155,7 @@ export function subscribe(
   const source = new EventSource(`${API_URL}${path}`);
   source.onerror = () => onTransportError?.();
   source.onmessage = (event) => onEvent(JSON.parse(event.data) as BackendEvent);
-  [
-    "input.ack",
-    "trigger.decision",
-    "trigger.error",
-    "retrieval.started",
-    "retrieval.ready",
-    "retrieval.discarded",
-    "retrieval.revalidated",
-    "retrieval.reused",
-    "retrieval.fallback",
-    "retrieval.error",
-    "answer.started",
-    "answer.delta",
-    "answer.completed",
-    "answer.error",
-    "agent.tool_started",
-    "agent.tool_completed",
-    "agent.context_compressed",
-    "run.started",
-    "run.completed",
-    "run.error",
-  ].forEach((name) =>
+  SSE_EVENT_TYPES.forEach((name) =>
     source.addEventListener(name, (event) =>
       onEvent(JSON.parse((event as MessageEvent).data) as BackendEvent),
     ),

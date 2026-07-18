@@ -14,7 +14,10 @@ def responses_model(
 ) -> tuple[OpenAIResponsesModel, AsyncOpenAI]:
     client = AsyncOpenAI(
         timeout=timeout_s,
-        max_retries=settings.openai_model_max_retries,
+        # The application owns a hard deadline and role-specific fallback for
+        # every model call. SDK retries would otherwise outlive or be cancelled
+        # by that outer budget, so only embeddings retain transport retries.
+        max_retries=0,
     )
     model = OpenAIResponsesModel(
         settings.openai_model,

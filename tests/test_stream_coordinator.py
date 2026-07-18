@@ -107,6 +107,7 @@ async def make_coordinator(
     endpoint_plan=None,
     trigger_timeout_s: float = 1.0,
     retrieval_timeout_s: float = 1.0,
+    parallel_raw_retrieval: bool = False,
 ):
     events: list[dict] = []
 
@@ -128,6 +129,7 @@ async def make_coordinator(
             trigger_min_new_tokens=1,
             trigger_interval_ms=0,
             trigger_max_presubmit_calls=4,
+            parallel_raw_retrieval=parallel_raw_retrieval,
             trigger_timeout_s=trigger_timeout_s,
             retrieval_timeout_s=retrieval_timeout_s,
         ),
@@ -152,7 +154,6 @@ async def test_immediate_send_revalidates_and_reuses_prefix_retrieval() -> None:
         plan_calls.append((committed.text, previous_query))
         return EndpointPlanResult(
             query=query,
-            reused_previous=True,
             decision_action="keep_previous",
             controller_usage=Usage(input_tokens=4, output_tokens=1, calls=1),
             controller_elapsed_ms=3.0,
@@ -187,6 +188,210 @@ async def test_immediate_send_revalidates_and_reuses_prefix_retrieval() -> None:
         and event["state"] == "ready_at_commit"
         for event in events
     )
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_raw_retrieval_overlaps_trigger_and_is_promoted_before_commit() -> None:
+    trigger = ControlledTrigger()
+    index = FakeIndex()
+    coordinator, events = await make_coordinator(
+        trigger=trigger,
+        index=index,
+        parallel_raw_retrieval=True,
+    )
+    complete = snapshot(1, "when was dune published ")
+
+    await coordinator.update(complete)
+    await asyncio.wait_for(trigger.started.wait(), timeout=0.1)
+    await wait_until(lambda: coordinator.evidence is not None, "raw retrieval missing")
+
+    assert not trigger.release.is_set()
+    assert index.calls == [("when was dune published", "stream:test")]
+    assert coordinator.evidence is not None
+    assert coordinator.evidence.controller_validated is False
+    assert coordinator.metrics.raw_retrieval_calls == 1
+    assert any(
+        event["type"] == "retrieval.ready" and event["candidate"] is True
+        for event in events
+    )
+
+    trigger.release.set()
+    await wait_until(
+        lambda: coordinator.evidence is not None
+        and coordinator.evidence.controller_validated,
+        "raw retrieval was not promoted",
+    )
+    evidence = await coordinator.commit(complete)
+
+    assert evidence.controller_validated is True
+    assert coordinator.metrics.accepted_ready_before_commit is True
+    assert coordinator.metrics.evidence_reuses == 1
+    assert coordinator.metrics.commit_fallbacks == 0
+    assert index.calls == [("when was dune published", "stream:test")]
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_commit_validates_completed_raw_evidence_before_accepting_it() -> None:
+    trigger = ControlledTrigger()
+    index = FakeIndex()
+    plan_calls: list[str | None] = []
+
+    async def endpoint_plan(
+        committed: InputSnapshot, previous_query: str | None
+    ) -> EndpointPlanResult:
+        del committed
+        plan_calls.append(previous_query)
+        assert previous_query is not None
+        return EndpointPlanResult(
+            query=previous_query,
+            decision_action="keep_previous",
+        )
+
+    coordinator, _ = await make_coordinator(
+        trigger=trigger,
+        index=index,
+        endpoint_plan=endpoint_plan,
+        parallel_raw_retrieval=True,
+    )
+    complete = snapshot(1, "when was dune published ")
+    await coordinator.update(complete)
+    await wait_until(lambda: coordinator.evidence is not None, "raw retrieval missing")
+    assert coordinator.evidence is not None
+    assert coordinator.evidence.controller_validated is False
+
+    evidence = await coordinator.commit(complete)
+
+    assert trigger.cancelled == 1
+    assert plan_calls == ["when was dune published"]
+    assert evidence.controller_validated is True
+    assert evidence.validated_ms is not None
+    assert coordinator.metrics.accepted_ready_before_commit is False
+    assert coordinator.metrics.evidence_reuses == 1
+    assert coordinator.metrics.commit_fallbacks == 0
+    assert index.calls == [("when was dune published", "stream:test")]
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_discards_raw_candidate_without_promotion() -> None:
+    class WaitingTrigger(ControlledTrigger):
+        async def decide(self, **kwargs) -> TriggerResult:
+            self.calls.append((kwargs["draft"], kwargs["is_commit"]))
+            self.started.set()
+            await self.release.wait()
+            return TriggerResult(
+                decision=TriggerDecision(action="wait"),
+                usage=Usage(calls=1),
+                elapsed_ms=1.0,
+            )
+
+    trigger = WaitingTrigger()
+    coordinator, events = await make_coordinator(
+        trigger=trigger,
+        parallel_raw_retrieval=True,
+    )
+
+    await coordinator.update(snapshot(1, "what was mercury discovered as "))
+    await wait_until(lambda: coordinator.evidence is not None, "raw retrieval missing")
+    assert coordinator.evidence is not None
+    assert coordinator.evidence.controller_validated is False
+    trigger.release.set()
+    await wait_until(
+        lambda: coordinator.evidence is None and coordinator._retrieval_task is None,
+        "wait did not discard raw evidence",
+    )
+
+    assert coordinator.previous_query is None
+    assert coordinator.metrics.evidence_revalidations == 0
+    assert not any(event["type"] == "retrieval.revalidated" for event in events)
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_rewritten_query_replaces_completed_raw_candidate() -> None:
+    class RewriteTrigger(ControlledTrigger):
+        async def decide(self, **kwargs) -> TriggerResult:
+            self.calls.append((kwargs["draft"], kwargs["is_commit"]))
+            self.started.set()
+            await self.release.wait()
+            return TriggerResult(
+                decision=TriggerDecision(
+                    action="retrieve",
+                    retrieval_query="planet Mercury discovery history",
+                ),
+                usage=Usage(calls=1),
+                elapsed_ms=1.0,
+            )
+
+    trigger = RewriteTrigger()
+    index = FakeIndex()
+    coordinator, _ = await make_coordinator(
+        trigger=trigger,
+        index=index,
+        parallel_raw_retrieval=True,
+    )
+
+    await coordinator.update(snapshot(1, "when was mercury discovered "))
+    await wait_until(lambda: coordinator.evidence is not None, "raw retrieval missing")
+    trigger.release.set()
+    await wait_until(
+        lambda: coordinator.evidence is not None
+        and coordinator.evidence.query == "planet Mercury discovery history",
+        "rewritten retrieval missing",
+    )
+
+    assert index.calls == [
+        ("when was mercury discovered", "stream:test"),
+        ("planet Mercury discovery history", "stream:test"),
+    ]
+    assert coordinator.evidence is not None
+    assert coordinator.evidence.controller_validated is True
+    assert coordinator.metrics.raw_retrieval_calls == 1
+    assert coordinator.metrics.retrieval_calls == 2
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_compatible_candidate_wins_over_optional_rewrite() -> None:
+    class CompatibleTrigger(ControlledTrigger):
+        async def decide(self, **kwargs) -> TriggerResult:
+            self.calls.append((kwargs["draft"], kwargs["is_commit"]))
+            self.started.set()
+            await self.release.wait()
+            return TriggerResult(
+                decision=TriggerDecision(
+                    action="retrieve",
+                    candidate_query_compatible=True,
+                    retrieval_query="cleaner dune publication query",
+                ),
+                usage=Usage(calls=1),
+                elapsed_ms=1.0,
+            )
+
+    trigger = CompatibleTrigger()
+    index = FakeIndex()
+    coordinator, _ = await make_coordinator(
+        trigger=trigger,
+        index=index,
+        parallel_raw_retrieval=True,
+    )
+
+    await coordinator.update(snapshot(1, "when was dune published "))
+    await wait_until(lambda: coordinator.evidence is not None, "raw retrieval missing")
+    trigger.release.set()
+    await wait_until(
+        lambda: coordinator.evidence is not None
+        and coordinator.evidence.controller_validated,
+        "compatible candidate was not promoted",
+    )
+
+    assert index.calls == [("when was dune published", "stream:test")]
+    assert coordinator.previous_query == "when was dune published"
+    assert coordinator.evidence is not None
+    assert coordinator.evidence.query == "when was dune published"
+    assert coordinator.metrics.retrieval_calls == 1
     await coordinator.close()
 
 
@@ -377,6 +582,8 @@ async def test_commit_uses_final_plan_and_retrieves_once_without_commit_trigger(
     assert coordinator.metrics.controller_failures == 2
     assert coordinator.metrics.accepted_retrieval_started_ms is not None
     assert coordinator.metrics.accepted_retrieval_ready_ms is not None
+    assert coordinator.metrics.first_retrieval_started_ms is None
+    assert coordinator.metrics.first_retrieval_ready_ms is None
     assert (
         coordinator.metrics.accepted_retrieval_ready_ms
         >= coordinator.metrics.accepted_retrieval_started_ms
@@ -485,7 +692,7 @@ async def test_inflight_retrieval_finishing_after_send_is_not_precommit_ready() 
     ) -> EndpointPlanResult:
         del committed
         assert previous_query == query
-        return EndpointPlanResult(query=query, reused_previous=True)
+        return EndpointPlanResult(query=query)
 
     index = FakeIndex()
     index.release.clear()

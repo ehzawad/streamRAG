@@ -25,12 +25,14 @@ What transfers from the paper
 2. Trigger
    The paper's model-triggered route evaluates fixed blocks/snapshots with an
    auxiliary model that either emits NO_QUERY or a new query. It does not equate
-   typed input with one model call per keystroke. Our training-free typed trigger
-   therefore applies deterministic word/time eligibility first, asks a small
-   structured model decision on bounded snapshots, and searches only when that
-   decision emits a new query. The paper's appendix reports roughly 4.7 trigger
-   model calls per utterance at a 500 ms interval; our call counts are measured
-   rather than assumed equivalent.
+   typed input with one model call per keystroke. Our training-free typed scheduler
+   therefore applies deterministic word/time and meaningful-completed-prefix
+   eligibility first. At an eligible boundary it may start one quarantined raw
+   retrieval concurrently with a small structured model decision on the bounded
+   snapshot. The model validates, refines, or rejects that candidate, and the
+   complete-input gate validates it again before answering. The paper's appendix
+   reports roughly 4.7 trigger model calls per utterance at a 500 ms interval; our
+   call counts are measured rather than assumed equivalent.
 
 3. Threads and cancellation
    Speculative retrievals run asynchronously. To keep cost bounded, our small
@@ -73,9 +75,9 @@ Path A - Naive RAG
   Wait for submit -> embed/retrieve full query -> generate grounded answer.
 
 Path B - typed StreamRAG
-  Receive partial prefixes -> speculative retrieval before submit -> cache the
-  latest useful result -> validate/fallback on submit -> generate one grounded
-  streamed answer.
+  Receive partial prefixes -> deterministic meaningful-prefix eligibility may
+  start raw retrieval alongside model validation -> quarantine the latest useful
+  result -> validate/fallback on submit -> generate one grounded streamed answer.
 
 For a fair comparison, both paths must use the same corpus, chunks, embedding
 model, vector index, top-k, final answer model, answer prompt, expected answers,

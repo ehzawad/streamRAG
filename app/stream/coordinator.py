@@ -9,14 +9,93 @@ from app.config import Settings
 from app.data.vector_store import QdrantVectorStore
 from app.models import InputSnapshot, SearchResult, Usage
 from app.stream.snapshot import SnapshotAnalyzer
-from app.stream.trigger import ModelTrigger
+from app.stream.trigger import ModelTrigger, bounded_retrieval_query
 
 Send = Callable[[dict], Awaitable[None]]
+
+_QUESTION_OPENERS = frozenset(
+    {
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "how",
+        "is",
+        "tell",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "would",
+    }
+)
+_QUERY_FUNCTION_WORDS = _QUESTION_OPENERS | frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "be",
+        "been",
+        "being",
+        "by",
+        "currently",
+        "for",
+        "from",
+        "has",
+        "have",
+        "in",
+        "into",
+        "it",
+        "its",
+        "me",
+        "of",
+        "on",
+        "or",
+        "please",
+        "than",
+        "that",
+        "the",
+        "their",
+        "this",
+        "to",
+        "with",
+    }
+)
 
 
 def has_terminal_boundary(text: str, last_trigger_text: str) -> bool:
     """Treat a completed typed sentence as a fresh model-decision boundary."""
     return text != last_trigger_text and text.rstrip().endswith(("?", "!", "."))
+
+
+def meaningful_completed_prefix(text: str, *, minimum_words: int) -> str | None:
+    """Return a recall-first raw query without embedding a partial final token."""
+    stripped = text.rstrip()
+    if not stripped:
+        return None
+    if text[-1].isspace() or stripped.endswith(("?", "!", ".", ",", ":", ";")):
+        candidate = stripped
+    else:
+        candidate, separator, _partial = stripped.rpartition(" ")
+        if not separator:
+            return None
+        candidate = candidate.rstrip()
+    words = candidate.split()
+    if len(words) < minimum_words:
+        return None
+    normalized = [word.casefold().strip("'\"()[]{}.,?!:;") for word in words]
+    if not set(normalized[:4]).intersection(_QUESTION_OPENERS):
+        return None
+    if sum(word not in _QUERY_FUNCTION_WORDS for word in normalized) < 2:
+        return None
+    return candidate
 
 
 @dataclass
@@ -28,6 +107,7 @@ class RetrievalEvidence:
     started_ms: float
     completed_ms: float
     validated_ms: float | None = None
+    controller_validated: bool = True
 
 
 @dataclass(frozen=True)
@@ -42,7 +122,6 @@ class EndpointPlanResult:
     """Complete-input controller decision, before any endpoint retrieval."""
 
     query: str
-    reused_previous: bool = False
     decision_action: str = "retrieve"
     controller_usage: Usage = field(default_factory=Usage)
     controller_calls: int = 1
@@ -60,6 +139,7 @@ class StreamMetrics:
     trigger_usage: Usage = field(default_factory=Usage)
     trigger_calls: int = 0
     retrieval_calls: int = 0
+    raw_retrieval_calls: int = 0
     retrieval_embedding_tokens: int = 0
     retrieval_query_vector_ms: float = 0.0
     retrieval_ann_ms: float = 0.0
@@ -124,6 +204,7 @@ class StreamCoordinator:
         self._retrieval_task: asyncio.Task | None = None
         self._retrieval_query: str | None = None
         self._retrieval_source_text: str | None = None
+        self._retrieval_controller_validated = True
         self._pending_promotion: EvidencePromotion | None = None
         self._pending_snapshot: InputSnapshot | None = None
         self._closed = False
@@ -239,11 +320,37 @@ class StreamCoordinator:
     def _start_trigger(self, snapshot: InputSnapshot) -> None:
         self.last_trigger_text = snapshot.text
         self.last_trigger_ms = time.perf_counter() * 1000
-        self._trigger_task = asyncio.create_task(self._trigger_worker(snapshot))
+        raw_prefix: str | None = None
+        candidate_query = self._validation_candidate_query(snapshot)
+        if (
+            self.settings.parallel_raw_retrieval
+            and candidate_query is None
+            and self.evidence is None
+            and not self._active(self._retrieval_task)
+        ):
+            raw_prefix = meaningful_completed_prefix(
+                snapshot.text,
+                minimum_words=self.settings.trigger_min_tokens,
+            )
+            candidate_query = bounded_retrieval_query(raw_prefix) if raw_prefix else None
+        self._trigger_task = asyncio.create_task(
+            self._trigger_worker(snapshot, candidate_query)
+        )
+        if candidate_query is not None and raw_prefix is not None:
+            raw_snapshot = snapshot.model_copy(update={"text": raw_prefix})
+            self._start_retrieval(
+                raw_snapshot,
+                candidate_query,
+                controller_validated=False,
+            )
 
-    async def _trigger_worker(self, snapshot: InputSnapshot):
+    async def _trigger_worker(
+        self,
+        snapshot: InputSnapshot,
+        candidate_query: str | None,
+    ):
         try:
-            return await self._run_trigger(snapshot)
+            return await self._run_trigger(snapshot, candidate_query)
         finally:
             current = asyncio.current_task()
             if self._trigger_task is current:
@@ -259,14 +366,18 @@ class StreamCoordinator:
                 ):
                     self._start_trigger(pending)
 
-    async def _run_trigger(self, snapshot: InputSnapshot):
+    async def _run_trigger(
+        self,
+        snapshot: InputSnapshot,
+        candidate_query: str | None,
+    ):
         self.metrics.trigger_calls += 1
         controller_started = time.perf_counter()
         try:
             result = await asyncio.wait_for(
                 self.trigger.decide(
                     draft=snapshot.text,
-                    previous_query=self.previous_query,
+                    previous_query=candidate_query or self.previous_query,
                     conversation_context=self.conversation_context,
                     is_commit=False,
                 ),
@@ -309,15 +420,52 @@ class StreamCoordinator:
                 "revision": snapshot.revision,
                 "action": decision.action,
                 "query": decision.retrieval_query,
+                "candidate_query_compatible": decision.candidate_query_compatible,
                 "elapsed_ms": round(result.elapsed_ms, 2),
             }
         )
-        if decision.action == "retrieve" and decision.retrieval_query:
+        if candidate_query and decision.candidate_query_compatible:
+            self.previous_query = candidate_query
+            await self._revalidate_query(
+                snapshot,
+                candidate_query,
+                commit_validation=False,
+            )
+        elif decision.action == "retrieve" and decision.retrieval_query:
             self.previous_query = decision.retrieval_query
-            self._start_retrieval(snapshot, decision.retrieval_query)
+            if candidate_query and self._same_query(
+                candidate_query, decision.retrieval_query
+            ):
+                await self._revalidate_query(
+                    snapshot,
+                    candidate_query,
+                    commit_validation=False,
+                )
+            else:
+                self._start_retrieval(snapshot, decision.retrieval_query)
         elif decision.action == "keep_previous":
+            if candidate_query is not None:
+                self.previous_query = candidate_query
             await self._revalidate_previous(snapshot)
+        elif candidate_query is not None:
+            await self._discard_unvalidated_candidate(candidate_query)
         return decision
+
+    async def _discard_unvalidated_candidate(self, query: str) -> None:
+        evidence = self.evidence
+        if (
+            evidence is not None
+            and not evidence.controller_validated
+            and self._same_query(evidence.query, query)
+        ):
+            self.evidence = None
+        if (
+            self._active(self._retrieval_task)
+            and not self._retrieval_controller_validated
+            and self._retrieval_query is not None
+            and self._same_query(self._retrieval_query, query)
+        ):
+            await self._cancel_active_retrieval()
 
     @staticmethod
     def _same_query(left: str, right: str) -> bool:
@@ -355,6 +503,7 @@ class StreamCoordinator:
                 started_ms=evidence.started_ms,
                 completed_ms=evidence.completed_ms,
                 validated_ms=max(evidence.completed_ms, validated_ms),
+                controller_validated=True,
             )
             self.metrics.evidence_revalidations += 1
             await self.send(
@@ -388,7 +537,13 @@ class StreamCoordinator:
                 }
             )
 
-    def _start_retrieval(self, snapshot: InputSnapshot, query: str) -> None:
+    def _start_retrieval(
+        self,
+        snapshot: InputSnapshot,
+        query: str,
+        *,
+        controller_validated: bool = True,
+    ) -> None:
         if self._active(self._retrieval_task):
             if self._retrieval_query == query and self._compatible_with_latest(snapshot):
                 return
@@ -400,27 +555,50 @@ class StreamCoordinator:
             self._pending_promotion.query, query
         ):
             self._pending_promotion = None
+        if self.evidence is not None and not self._same_query(self.evidence.query, query):
+            self.evidence = None
         self._retrieval_query = query
         self._retrieval_source_text = snapshot.text
-        self._retrieval_task = asyncio.create_task(self._retrieval_worker(snapshot, query))
+        self._retrieval_controller_validated = controller_validated
+        self._retrieval_task = asyncio.create_task(
+            self._retrieval_worker(snapshot, query, controller_validated)
+        )
 
-    async def _retrieval_worker(self, snapshot: InputSnapshot, query: str) -> None:
+    async def _retrieval_worker(
+        self,
+        snapshot: InputSnapshot,
+        query: str,
+        controller_validated: bool,
+    ) -> None:
         try:
-            await self._run_retrieval(snapshot, query)
+            await self._run_retrieval(snapshot, query, controller_validated)
         finally:
             if self._retrieval_task is asyncio.current_task():
                 self._retrieval_task = None
                 self._retrieval_query = None
                 self._retrieval_source_text = None
+                self._retrieval_controller_validated = True
                 self._pending_promotion = None
 
-    async def _run_retrieval(self, snapshot: InputSnapshot, query: str) -> None:
+    async def _run_retrieval(
+        self,
+        snapshot: InputSnapshot,
+        query: str,
+        controller_validated: bool,
+    ) -> None:
         self.metrics.retrieval_calls += 1
+        if not controller_validated:
+            self.metrics.raw_retrieval_calls += 1
         started = time.perf_counter() * 1000
         if self.metrics.first_retrieval_started_ms is None:
             self.metrics.first_retrieval_started_ms = started
         await self.send(
-            {"type": "retrieval.started", "revision": snapshot.revision, "query": query}
+            {
+                "type": "retrieval.started",
+                "revision": snapshot.revision,
+                "query": query,
+                "candidate": not controller_validated,
+            }
         )
         try:
             result = await asyncio.wait_for(
@@ -489,6 +667,7 @@ class StreamCoordinator:
                 if promoted and promotion is not None
                 else None
             ),
+            controller_validated=controller_validated or promoted,
         )
         await self.send(
             {
@@ -497,13 +676,33 @@ class StreamCoordinator:
                 "query": query,
                 "hits": len(result.hits),
                 "elapsed_ms": round(result.elapsed_ms, 2),
+                "candidate": not (controller_validated or promoted),
             }
         )
 
     def _exact_evidence(self, snapshot: InputSnapshot) -> RetrievalEvidence | None:
         evidence = self.evidence
-        if evidence is not None and evidence.source_text == snapshot.text:
+        if (
+            evidence is not None
+            and evidence.controller_validated
+            and evidence.source_text == snapshot.text
+        ):
             return evidence
+        return None
+
+    def _validation_candidate_query(self, snapshot: InputSnapshot) -> str | None:
+        if self.previous_query:
+            return self.previous_query
+        if (
+            self._active(self._retrieval_task)
+            and self._retrieval_query is not None
+            and self._retrieval_source_text is not None
+            and snapshot.text.startswith(self._retrieval_source_text)
+        ):
+            return self._retrieval_query
+        evidence = self.evidence
+        if evidence is not None and snapshot.text.startswith(evidence.source_text):
+            return evidence.query
         return None
 
     async def _accept(
@@ -544,11 +743,9 @@ class StreamCoordinator:
         query: str | None = None,
     ) -> RetrievalEvidence:
         """Run the one final retrieval selected by the complete-input controller."""
-        retrieval_query = query or snapshot.text
+        retrieval_query = bounded_retrieval_query(query or snapshot.text)
         self.metrics.retrieval_calls += 1
         started = time.perf_counter() * 1000
-        if self.metrics.first_retrieval_started_ms is None:
-            self.metrics.first_retrieval_started_ms = started
         try:
             result = await asyncio.wait_for(
                 self.index.search(retrieval_query, cache_scope=self.cache_scope),
@@ -561,8 +758,6 @@ class StreamCoordinator:
         self.metrics.retrieval_query_vector_ms += result.query_vector_ms
         self.metrics.retrieval_ann_ms += result.ann_ms
         completed = time.perf_counter() * 1000
-        if self.metrics.first_retrieval_ready_ms is None:
-            self.metrics.first_retrieval_ready_ms = completed
         return RetrievalEvidence(
             source_text=snapshot.text,
             revision=snapshot.revision,
@@ -620,7 +815,7 @@ class StreamCoordinator:
     ) -> RetrievalEvidence:
         """Validate speculative work against the complete committed input."""
         await self._stop_trigger_for_commit()
-        previous_query = self.previous_query
+        previous_query = self._validation_candidate_query(snapshot)
         try:
             plan = await self.endpoint_plan(snapshot, previous_query)
         except Exception:
