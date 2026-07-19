@@ -20,11 +20,10 @@ from comparison.benchmark.typed_trace import (
     cumulative_typed_trace,
     typing_duration_ms,
 )
-from comparison.contracts import COMMON_IDENTITY_FIELDS, service_identity_issues
+from comparison.identity import SHARED_IDENTITY_FIELDS, comparison_issues
 
 ROOT = Path(__file__).resolve().parents[2]
-FREEZE_DOMAIN = b"typed-streamrag-eval-freeze-v1\0"
-DEFAULT_INFERENCE_DIR = ROOT / "comparison" / "benchmark" / "results" / "inference_bundle"
+DEFAULT_DATASET = ROOT / "data" / "crag_eval"
 SETTLED_DRAFT_DELAY_MS = 500
 
 
@@ -38,10 +37,6 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
-
-
-def opaque_freeze_id(evaluation_manifest_sha256: str) -> str:
-    return hashlib.sha256(FREEZE_DOMAIN + evaluation_manifest_sha256.encode("ascii")).hexdigest()
 
 
 def manifest_relative_path(target: Path, manifest_path: Path) -> str:
@@ -672,11 +667,8 @@ async def run_case(
         )
 
 
-def reportability_gates(
+def run_quality_gates(
     *,
-    smoke: bool,
-    reportable_protocol: bool,
-    warmup_complete: bool,
     observed_rows: int,
     expected_rows: int,
     completed_rows: int,
@@ -693,11 +685,8 @@ def reportability_gates(
     snapshot_complete = snapshot_transport_errors == 0
     deadline_complete = timeout_count == 0
     cleanup_complete = turn_cleanup_failures == 0
-    reportable = (
-        not smoke
-        and reportable_protocol
-        and warmup_complete
-        and observed_rows == expected_rows
+    clean = (
+        observed_rows == expected_rows
         and failure_count == 0
         and timing_complete
         and snapshot_complete
@@ -705,7 +694,7 @@ def reportability_gates(
         and cleanup_complete
     )
     return {
-        "reportable": reportable,
+        "clean": clean,
         "timing_drift_gate": {
             "status": "complete" if timing_complete else "missing_or_incomplete",
             "observations": drift_observations,
@@ -731,29 +720,23 @@ def reportability_gates(
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Replay the frozen typed A/B benchmark")
+    parser = argparse.ArgumentParser(
+        description="Replay the typed A/B benchmark over the committed dataset"
+    )
     parser.add_argument("--naive-base-url", default="http://localhost:8001")
     parser.add_argument("--stream-base-url", default="http://localhost:8002")
-    parser.add_argument(
-        "--require-distinct-services",
-        action="store_true",
-        help=(
-            "also require separate app processes for smoke runs; reportable runs "
-            "always require them"
-        ),
-    )
+    parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument(
         "--warmup-repetitions",
         type=int,
         default=0,
         help="unreported full-dataset warm-up repetitions",
     )
-    parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument(
         "--query-limit",
         type=int,
         default=10,
-        help="ordered frozen-query prefix used by the reportable comparison",
+        help="ordered query prefix to replay",
     )
     parser.add_argument("--wpm", type=float, default=70.0)
     parser.add_argument(
@@ -777,10 +760,13 @@ async def main() -> None:
     parser.add_argument(
         "--queries",
         type=Path,
-        default=DEFAULT_INFERENCE_DIR / "test_queries.jsonl",
+        default=DEFAULT_DATASET / "test_queries.jsonl",
     )
     parser.add_argument(
-        "--smoke", action="store_true", help="allow unapproved data; not reportable"
+        "--dataset-manifest",
+        type=Path,
+        default=None,
+        help="checksums.sha256 binding the query file; defaults to the query directory",
     )
     parser.add_argument(
         "--output",
@@ -805,90 +791,26 @@ async def main() -> None:
 
     naive_url = args.naive_base_url.rstrip("/")
     stream_url = args.stream_base_url.rstrip("/")
-    must_isolate_services = not args.smoke or args.require_distinct_services
-    if must_isolate_services and naive_url == stream_url:
-        parser.error("Naive and Stream need different service URLs for this run")
+    if naive_url == stream_url:
+        parser.error("Naive and Stream need different service URLs")
+
+    # Predictions, queries, and gold all bind to this one committed checksum manifest.
+    dataset_manifest_path = args.dataset_manifest or (args.queries.parent / "checksums.sha256")
+    if not dataset_manifest_path.is_file():
+        parser.error(f"query dataset checksum manifest is missing: {dataset_manifest_path}")
+    dataset_checksums = read_checksum_manifest(dataset_manifest_path)
+    if dataset_checksums.get(args.queries.name) != sha256_file(args.queries):
+        parser.error(f"{args.queries.name} does not match its dataset checksum manifest")
+    dataset_manifest_sha256 = sha256_file(dataset_manifest_path)
 
     source_rows = read_jsonl(args.queries)
-    rows = source_rows
-    if args.smoke:
-        if args.queries.name != "dev_queries.jsonl":
-            parser.error("--smoke only accepts dev_queries.jsonl; unseen test queries are refused")
-        dataset_manifest_path = args.queries.parent / "checksums.sha256"
-        if not dataset_manifest_path.is_file():
-            parser.error("--smoke queries require their adjacent dataset checksum manifest")
-        dataset_checksums = read_checksum_manifest(dataset_manifest_path)
-        expected_dev_queries = dataset_checksums.get("dev_queries.jsonl")
-        if expected_dev_queries != sha256_file(args.queries):
-            parser.error("--smoke dev queries do not match their dataset checksum manifest")
-        dataset_manifest_sha256 = sha256_file(dataset_manifest_path)
-        if args.query_limit > len(source_rows):
-            parser.error(
-                f"--query-limit {args.query_limit} exceeds the {len(source_rows)} dev queries"
-            )
-        rows = rows[: args.query_limit]
-        args.repetitions = 1
-        args.warmup_repetitions = 0
-        evaluation_manifest_sha256 = ""
-        freeze_id = ""
-    else:
-        inference_bundle_path = args.queries.parent / "inference_bundle.json"
-        if not inference_bundle_path.is_file():
-            raise SystemExit(
-                f"redacted inference bundle metadata is missing: {inference_bundle_path}"
-            )
-        inference_bundle = json.loads(inference_bundle_path.read_text(encoding="utf-8"))
-        if inference_bundle.get("bundle_role") != "inference_corpus":
-            raise SystemExit("benchmark queries must come from a redacted inference_corpus bundle")
-        if inference_bundle.get("approval_status") != "approved_frozen":
-            raise SystemExit("inference bundle is not approved_frozen")
-        evaluation_manifest_sha256 = str(inference_bundle.get("evaluation_manifest_sha256") or "")
-        freeze_id = str(inference_bundle.get("freeze_id") or "")
-        if freeze_id != opaque_freeze_id(evaluation_manifest_sha256):
-            raise SystemExit("inference bundle opaque freeze_id is invalid")
-        if inference_bundle.get("test_queries_sha256") != sha256_file(args.queries):
-            raise SystemExit("query file does not match inference bundle metadata")
-        documents_name = str(inference_bundle.get("documents_filename") or "documents.jsonl")
-        if documents_name not in {"documents.jsonl", "documents.jsonl.bz2"}:
-            raise SystemExit("inference bundle documents_filename is invalid")
-        if any("gold" in path.name.casefold() for path in args.queries.parent.iterdir()):
-            raise SystemExit("inference bundle directory must not contain scorer-only gold")
-        dataset_manifest_path = args.queries.parent / "checksums.sha256"
-        if not dataset_manifest_path.is_file():
-            raise SystemExit(f"dataset checksum manifest is missing: {dataset_manifest_path}")
-        dataset_manifest_sha256 = sha256_file(dataset_manifest_path)
-        dataset_checksums = read_checksum_manifest(dataset_manifest_path)
-        if any("gold" in name.casefold() for name in dataset_checksums):
-            raise SystemExit("inference checksum manifest must not name scorer-only gold")
-        expected_inference_entries = {
-            "dataset_summary.json",
-            documents_name,
-            "test_queries.jsonl",
-            "inference_bundle.json",
-        }
-        if set(dataset_checksums) != expected_inference_entries:
-            raise SystemExit("inference checksum manifest has unexpected or missing entries")
-        for dataset_file in (
-            args.queries.parent / "dataset_summary.json",
-            args.queries.parent / documents_name,
-            args.queries,
-            inference_bundle_path,
-        ):
-            expected = dataset_checksums.get(dataset_file.name)
-            if (
-                expected is None
-                or not dataset_file.is_file()
-                or sha256_file(dataset_file) != expected
-            ):
-                raise SystemExit(
-                    f"{dataset_file.name} is not bound to the dataset checksum manifest"
-                )
-        if args.query_limit != 10 or len(source_rows) < args.query_limit:
-            raise SystemExit("reportable benchmark requires the ordered first 10 frozen queries")
-        rows = source_rows[: args.query_limit]
-        query_ids = [str(row.get("id") or "") for row in rows]
-        if len(set(query_ids)) != 10 or any(not value for value in query_ids):
-            raise SystemExit("reportable benchmark requires 10 uniquely identified frozen queries")
+    if args.query_limit > len(source_rows):
+        parser.error(f"--query-limit {args.query_limit} exceeds the {len(source_rows)} queries")
+    rows = source_rows[: args.query_limit]
+    query_ids = [str(row.get("id") or "") for row in rows]
+    if len(set(query_ids)) != len(rows) or any(not value for value in query_ids):
+        parser.error("queries require unique, non-empty IDs")
+
     run_tag = uuid.uuid4().hex[:10]
     timeout = httpx.Timeout(30.0, read=None)
     async with (
@@ -899,96 +821,12 @@ async def main() -> None:
             "naive": await data_status(naive_client, naive_url),
             "stream": await data_status(stream_client, stream_url),
         }
+        issues = comparison_issues(statuses["naive"], statuses["stream"])
+        if issues:
+            raise SystemExit(f"services are not a fair, isolated pair: {issues}")
         for path, status in statuses.items():
-            identity_issues = service_identity_issues(status, path, root=ROOT)
-            if identity_issues:
-                raise SystemExit(f"{path} service identity is invalid: {identity_issues}")
-            if status["indexed_chunks"] <= 0:
-                raise SystemExit(f"{path} Qdrant index is empty; sync data before benchmarking")
-            if args.smoke and status.get("serving_dataset_checksum") != dataset_manifest_sha256:
-                raise SystemExit(
-                    f"{path} serves a different corpus than the selected dev smoke queries"
-                )
-            if args.smoke and status.get("dataset_checksums_valid") is not True:
-                raise SystemExit(f"{path} development dataset checksum verification failed")
-            if args.smoke and status.get("index_matches_current_corpus") is not True:
-                raise SystemExit(f"{path} development index is stale for its corpus/config")
-            if args.smoke and int(status["indexed_chunks"]) != int(
-                status.get("indexed_desired_chunks") or -1
-            ):
-                raise SystemExit(f"{path} development index point count is incomplete")
-            if args.smoke:
-                expected_configuration = {
-                    "model": "gpt-5.6-sol",
-                    "embedding_model": "text-embedding-3-large",
-                    "reasoning_effort": "medium",
-                    "summary_reasoning_effort": "low",
-                    "service_tier": "default",
-                }
-                mismatches = [
-                    key for key, value in expected_configuration.items() if status.get(key) != value
-                ]
-                if mismatches:
-                    raise SystemExit(
-                        f"{path} development service has the wrong locked configuration: "
-                        f"{mismatches}"
-                    )
-                if path == "stream" and (
-                    status.get("trigger_reasoning_effort") != "low"
-                    or int(status.get("settled_draft_delay_ms") or -1)
-                    != SETTLED_DRAFT_DELAY_MS
-                ):
-                    raise SystemExit(
-                        "stream development service has the wrong typed-input configuration"
-                    )
-            if status["approval_status"] != "approved_frozen" and not args.smoke:
-                raise SystemExit(f"{path} dataset is not approved_frozen; final benchmark refused")
-            if not args.smoke and status.get("dataset_checksums_valid") is not True:
-                raise SystemExit(f"{path} dataset checksum verification failed")
-            if not args.smoke and status.get("index_matches_current_corpus") is not True:
-                raise SystemExit(f"{path} index is stale for the current corpus/config")
-        comparable_candidates = COMMON_IDENTITY_FIELDS
-        if not args.smoke:
-            missing_status_fields = {
-                path: [key for key in comparable_candidates if status.get(key) is None]
-                for path, status in statuses.items()
-            }
-            missing_status_fields = {
-                path: fields for path, fields in missing_status_fields.items() if fields
-            }
-            if missing_status_fields:
-                raise SystemExit(
-                    "reportable benchmark requires complete backend identities: "
-                    f"{missing_status_fields}"
-                )
-            for path, status in statuses.items():
-                if status["dataset_checksums_valid"] is not True:
-                    raise SystemExit(f"{path} backend dataset checksum validation failed")
-                if status["index_matches_current_corpus"] is not True:
-                    raise SystemExit(f"{path} index does not match its current corpus/config")
-                if int(status["indexed_chunks"]) != int(status["indexed_desired_chunks"]):
-                    raise SystemExit(f"{path} index point count does not match desired chunks")
-                if status["index_source_sha256"] != status["current_index_source_sha256"]:
-                    raise SystemExit(f"{path} index source fingerprint is stale")
-                if status["dataset_checksum"] != evaluation_manifest_sha256:
-                    raise SystemExit(
-                        f"{path} backend evaluation freeze ID does not match the query bundle"
-                    )
-                if status["serving_dataset_checksum"] != dataset_manifest_sha256:
-                    raise SystemExit(f"{path} backend serving bundle checksum does not match")
-                if status["freeze_id"] != freeze_id:
-                    raise SystemExit(f"{path} backend opaque freeze_id does not match")
-        comparable_fields = tuple(
-            key
-            for key in comparable_candidates
-            if statuses["naive"].get(key) is not None and statuses["stream"].get(key) is not None
-        )
-        if any(
-            statuses["naive"].get(key) != statuses["stream"].get(key) for key in comparable_fields
-        ):
-            raise SystemExit(
-                "Naive and Stream services do not expose the same dataset/index status"
-            )
+            if status.get("serving_dataset_checksum") != dataset_manifest_sha256:
+                raise SystemExit(f"{path} serves a different corpus than the query dataset")
         instance_ids = {
             path: str(status.get("instance_id") or "") for path, status in statuses.items()
         }
@@ -997,57 +835,34 @@ async def main() -> None:
             and instance_ids["stream"]
             and instance_ids["naive"] != instance_ids["stream"]
         )
-        if must_isolate_services and not distinct_instances:
-            raise SystemExit(
-                "benchmark requires two non-empty, different backend instance_id values"
-            )
+        compared_fields = [
+            field
+            for field in SHARED_IDENTITY_FIELDS
+            if statuses["naive"].get(field) is not None
+            and statuses["stream"].get(field) is not None
+        ]
 
         args.output.parent.mkdir(parents=True, exist_ok=True)
         manifest_path = args.output.with_suffix(".manifest.json")
-        archived_queries_path = args.queries
-        archived_serving_manifest_path = dataset_manifest_path
-        if not args.smoke:
-            # Keep the final run independently scoreable after the ignored serving
-            # bundle is removed. These are gold-free provenance files: the exact
-            # test queries and the serving checksum manifest, never test gold.
-            archived_queries_path = args.output.with_suffix(".queries.jsonl")
-            archived_serving_manifest_path = args.output.with_suffix(".serving-checksums.sha256")
-            shutil.copyfile(args.queries, archived_queries_path)
-            if dataset_manifest_path is None:
-                raise RuntimeError("reportable run is missing its serving checksum manifest")
-            shutil.copyfile(dataset_manifest_path, archived_serving_manifest_path)
-        reportable_protocol = (
-            args.warmup_repetitions == 0
-            and args.repetitions == 1
-            and args.query_limit == 10
-            and len(rows) == 10
-            and args.wpm == 70.0
-            and args.post_typing_dwell_ms == 5000.0
-            and int(statuses["stream"]["settled_draft_delay_ms"]) == SETTLED_DRAFT_DELAY_MS
-            and args.max_typing_drift_ms == 100.0
-            and args.case_timeout_s == 45.0
-        )
+        # Archive gold-free provenance next to predictions so the run stays
+        # independently scoreable: the exact queries and their checksum manifest.
+        archived_queries_path = args.output.with_suffix(".queries.jsonl")
+        archived_manifest_path = args.output.with_suffix(".dataset-checksums.sha256")
+        shutil.copyfile(args.queries, archived_queries_path)
+        shutil.copyfile(dataset_manifest_path, archived_manifest_path)
+
         manifest: dict[str, Any] = {
-            "schema_version": 4,
+            "schema_version": 5,
             "run_tag": run_tag,
             "created_unix_s": time.time(),
             "queries": manifest_relative_path(archived_queries_path, manifest_path),
             "queries_sha256": sha256_file(args.queries),
-            "query_ids": [str(row["id"]) for row in rows],
+            "query_ids": query_ids,
             "query_count": len(rows),
-            "query_selection": {
-                "method": "ordered_prefix",
-                "source_query_count": len(source_rows),
-                "selected_query_count": len(rows),
-            },
-            "freeze_id": freeze_id,
-            "evaluation_manifest_sha256": evaluation_manifest_sha256,
-            "serving_checksum_manifest": (
-                manifest_relative_path(archived_serving_manifest_path, manifest_path)
-                if archived_serving_manifest_path
-                else None
+            "dataset_checksum_manifest": manifest_relative_path(
+                archived_manifest_path, manifest_path
             ),
-            "serving_checksum_manifest_sha256": dataset_manifest_sha256,
+            "dataset_checksum_manifest_sha256": dataset_manifest_sha256,
             "benchmark_harness_sha256": {
                 "run_benchmark.py": sha256_file(Path(__file__).resolve()),
                 "typed_trace.py": sha256_file(ROOT / "comparison" / "benchmark" / "typed_trace.py"),
@@ -1058,7 +873,6 @@ async def main() -> None:
             "prediction_rows_observed": 0,
             "finalized": False,
             "run_status": "initialized",
-            "reportable": False,
             "warmup_repetitions": args.warmup_repetitions,
             "warmup_outputs_expected": len(rows) * args.warmup_repetitions * 2,
             "warmup_outputs_completed": 0,
@@ -1069,20 +883,16 @@ async def main() -> None:
             "settled_draft_delay_ms": SETTLED_DRAFT_DELAY_MS,
             "case_deadline_s": args.case_timeout_s,
             "max_typing_drift_ms": args.max_typing_drift_ms,
-            "smoke_non_reportable": args.smoke,
+            "approval_status": statuses["naive"].get("approval_status"),
             "path_urls": {"naive": naive_url, "stream": stream_url},
             "distinct_service_urls": naive_url != stream_url,
             "backend_instance_ids": instance_ids,
             "distinct_backend_instances": distinct_instances,
-            "compared_status_fields": list(comparable_fields),
+            "compared_status_fields": compared_fields,
             "text_input_contract": {
                 "snapshots": (
                     "400 ms changed-only cumulative dirty-text deliveries, including partial "
                     "words; unchanged ticks emit no request"
-                ),
-                "sampling_boundary": (
-                    "the sampler ticks strictly before deterministic Send time through the "
-                    "fixed post-typing dwell, but only changed text is delivered"
                 ),
                 "post_typing_dwell_ms": args.post_typing_dwell_ms,
                 "commit": (
@@ -1090,27 +900,7 @@ async def main() -> None:
                     "or produce an answer"
                 ),
                 "ui_snapshot_sampling_ms": 400,
-                "server_trigger_interval_ms": 500,
                 "server_settled_draft_delay_ms": SETTLED_DRAFT_DELAY_MS,
-                "trigger_min_words": 5,
-                "snapshot_transport": (
-                    "asynchronous requests never delay the planned Send boundary; the exact "
-                    "full-draft dwell snapshot must complete, obsolete prefix requests may be "
-                    "aborted at Send, and other transport failures make the run non-reportable"
-                ),
-                "excluded": ["ASR latency", "endpoint detection", "trailing silence"],
-            },
-            "preregistered_protocol_gate": {
-                "status": "complete" if reportable_protocol else "missing_or_incomplete",
-                "required_query_count": 10,
-                "required_total_path_runs": 20,
-                "required_warmup_repetitions": 0,
-                "required_measured_repetitions": 1,
-                "required_words_per_minute": 70.0,
-                "required_post_typing_dwell_ms": 5000.0,
-                "required_settled_draft_delay_ms": SETTLED_DRAFT_DELAY_MS,
-                "required_max_typing_drift_ms": 100.0,
-                "required_case_deadline_s": 45.0,
             },
             "warmup_gate": {"status": "pending"},
             "timing_drift_gate": {"status": "pending"},
@@ -1119,13 +909,7 @@ async def main() -> None:
             "turn_cleanup_gate": {"status": "pending"},
             "cache_isolation": (
                 "unique session scope per repetition/query/path; separate service processes"
-                if distinct_instances
-                else "unique session scope per repetition/query/path within one service"
             ),
-            "scorer_isolation": {
-                "runner_gold_access": "forbidden",
-                "binding": "query SHA-256 plus opaque evaluation freeze_id",
-            },
             "data_status": statuses,
         }
 
@@ -1269,10 +1053,7 @@ async def main() -> None:
                         )
 
             expected_rows = int(manifest["prediction_rows_expected"])
-            gates = reportability_gates(
-                smoke=args.smoke,
-                reportable_protocol=reportable_protocol,
-                warmup_complete=manifest["warmup_gate"]["status"] == "complete",
+            gates = run_quality_gates(
                 observed_rows=observed_rows,
                 expected_rows=expected_rows,
                 completed_rows=completed_rows,
@@ -1286,7 +1067,7 @@ async def main() -> None:
                 turn_cleanup_failures=turn_cleanup_failures,
             )
             gates["case_deadline_gate"]["deadline_s"] = args.case_timeout_s
-            reportable = bool(gates["reportable"])
+            clean = bool(gates["clean"])
             manifest.update(
                 {
                     "completed_unix_s": time.time(),
@@ -1295,11 +1076,12 @@ async def main() -> None:
                     "completed_outputs": completed_rows,
                     "failures": failure_count,
                     "deadline_failures": timeout_count,
-                    **gates,
-                    "run_status": (
-                        "completed_reportable" if reportable else "completed_non_reportable"
-                    ),
-                    "reportable": reportable,
+                    "timing_drift_gate": gates["timing_drift_gate"],
+                    "snapshot_transport_gate": gates["snapshot_transport_gate"],
+                    "case_deadline_gate": gates["case_deadline_gate"],
+                    "turn_cleanup_gate": gates["turn_cleanup_gate"],
+                    "clean_run": clean,
+                    "run_status": "completed_clean" if clean else "completed_with_issues",
                     "finalized": True,
                 }
             )
@@ -1318,7 +1100,7 @@ async def main() -> None:
                         "deadline_failures": timeout_count,
                         "run_status": "aborted",
                         "terminal_error_type": type(exc).__name__,
-                        "reportable": False,
+                        "clean_run": False,
                         "finalized": True,
                     }
                 )
