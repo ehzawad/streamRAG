@@ -378,7 +378,7 @@ def compact_corpus(
     if len(distractors) < distractors_needed:
         raise RuntimeError("not enough complete distractor documents for the corpus target")
 
-    # Begin with a fixed-hash sample. If it is too large for embedded Qdrant,
+    # Begin with a fixed-hash sample. If it exceeds the assignment point budget,
     # deterministically replace its largest distractors with the smallest
     # remaining complete documents. This preserves the document count and every
     # mandatory evidence page without shortening any text.

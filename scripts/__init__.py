@@ -1,1 +1,1 @@
-"""Runnable data and benchmark preparation helpers."""
+"""Dataset preparation and verification helpers."""
