@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +65,3 @@ class JsonlMetricLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(line)
-
-
-def usage_record(usage: Usage, settings: Settings) -> dict[str, Any]:
-    return {"usage": asdict(usage), "estimated_cost_usd": asdict(model_cost(usage, settings))}

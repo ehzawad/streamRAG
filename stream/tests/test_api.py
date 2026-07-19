@@ -10,7 +10,7 @@ class TriggerStub:
 
 def test_stream_service_exposes_typed_snapshot_surface() -> None:
     paths = app.openapi()["paths"]
-    assert "text/html" in paths["/"]["get"]["responses"]["200"]["content"]
+    assert "application/json" in paths["/"]["get"]["responses"]["200"]["content"]
     assert "/v1/turns/{turn_id}/commit" in paths
     assert "/v1/turns/{turn_id}/snapshots" in paths
     assert "/v1/turns/{turn_id}/events" in paths

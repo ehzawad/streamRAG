@@ -20,7 +20,6 @@ from shared.data.crag import (
     require_dataset_snapshot,
     resolve_documents_path,
     sha256_file,
-    verify_dataset_checksums,
 )
 from shared.fingerprints import (
     dataset_fingerprints,
@@ -118,7 +117,7 @@ def _write_frozen_fixture(root: Path) -> None:
 def test_frozen_approval_requires_matching_checksum_manifest(tmp_path: Path) -> None:
     dataset = tmp_path / "dataset"
     _write_frozen_fixture(dataset)
-    assert len(verify_dataset_checksums(dataset)) == 7
+    assert len(capture_dataset_snapshot(dataset).checksums()) == 7
     snapshot = require_dataset_snapshot(dataset, allow_unreviewed=False)
     assert snapshot.approval_status == "approved_frozen"
 
@@ -140,7 +139,7 @@ def test_checksum_verifier_and_reader_accept_one_compressed_corpus(tmp_path: Pat
         encoding="utf-8",
     )
 
-    verified = verify_dataset_checksums(dataset)
+    verified = capture_dataset_snapshot(dataset).checksums()
 
     assert "documents.jsonl.bz2" in verified
     assert resolve_documents_path(dataset) == compressed

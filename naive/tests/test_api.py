@@ -5,7 +5,7 @@ from shared.config import Settings
 
 def test_naive_service_exposes_only_committed_input_surface() -> None:
     paths = app.openapi()["paths"]
-    assert "text/html" in paths["/"]["get"]["responses"]["200"]["content"]
+    assert "application/json" in paths["/"]["get"]["responses"]["200"]["content"]
     assert "/v1/turns/{turn_id}/commit" in paths
     assert "/v1/turns/{turn_id}/snapshots" not in paths
     assert "/v1/turns/{turn_id}/events" not in paths

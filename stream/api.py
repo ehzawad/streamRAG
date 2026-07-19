@@ -16,10 +16,6 @@ def _path_factory(current_settings: StreamSettings, store: QdrantVectorStore) ->
 app = create_app(
     implementation="stream",
     api_title="StreamRAG API",
-    page_title="StreamRAG",
-    page_subtitle=(
-        "Correction-safe retrieval can prepare evidence while you type; answers wait for Send."
-    ),
     settings_provider=lambda: settings,
     path_factory=_path_factory,
     supports_snapshots=True,

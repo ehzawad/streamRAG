@@ -200,11 +200,6 @@ def capture_dataset_snapshot(dataset_dir: Path) -> VerifiedDatasetSnapshot:
     )
 
 
-def verify_dataset_checksums(dataset_dir: Path) -> dict[str, str]:
-    """Verify the freeze manifest and all integrity-sensitive dataset files."""
-    return capture_dataset_snapshot(dataset_dir).checksums()
-
-
 def require_dataset_snapshot(
     dataset_dir: Path,
     allow_unreviewed: bool,

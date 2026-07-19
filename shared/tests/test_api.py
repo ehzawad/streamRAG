@@ -43,8 +43,6 @@ def build_test_app(
     return api_factory.create_app(
         implementation=implementation,
         api_title="StreamRAG API" if implementation == "stream" else "Naive RAG API",
-        page_title="StreamRAG",
-        page_subtitle="Test service presentation.",
         settings_provider=lambda: settings,
         path_factory=lambda _settings, _store: StubPath(
             implementation,
@@ -66,26 +64,13 @@ def isolated_settings(tmp_path: Path, *, allow_unreviewed: bool) -> Settings:
 def test_health_and_dataset_gate(tmp_path: Path) -> None:
     app = build_test_app(isolated_settings(tmp_path, allow_unreviewed=False))
     with TestClient(app) as client:
-        page = client.get("/")
-        assert page.status_code == 200
-        assert page.headers["content-type"].startswith("text/html")
-        assert "StreamRAG" in page.text
-        assert '"implementation":"stream"' in page.text
-        assert '"supportsSnapshots":true' in page.text
-        assert 'snapshotQueue = { active: false, controller: null, latest: "" }' in page.text
-        assert "if (queue !== snapshotQueue || queue.active || sent) return" in page.text
-        assert "if (newConversation || !sessionId) sessionId = id();" in page.text
-        assert (
-            'function prepareNextTurn(nextStatus = "Ask a follow-up; this chat keeps context.")'
-            in page.text
-        )
-        assert "let lifecycleEpoch = 0;" in page.text
-        assert "if (epoch !== lifecycleEpoch || controller.signal.aborted) return;" in page.text
-        assert 'if (epoch !== lifecycleEpoch || error.name === "AbortError") return;' in page.text
-        assert "turnEvents?.close();\n  turnEvents = null;" in page.text
-        assert "runEvents?.close();\n  runEvents = null;" in page.text
-        assert 'byId("reset").addEventListener("click", () => resetState(true, true))' in page.text
-        assert client.get("/v1/info").json()["implementation"] == "stream"
+        expected_info = {
+            "service": "stream-rag-api",
+            "implementation": "stream",
+            "docs": "/docs",
+            "health": "/v1/health",
+        }
+        assert client.get("/").json() == expected_info
         assert client.get("/v1/metrics/schema").json() == {
             "implementation": "stream",
             "metrics_contract_version": 1,
