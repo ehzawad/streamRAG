@@ -59,6 +59,7 @@ all five first-token races, with a median paired reduction of 967.857 ms
 |---|---|
 | `naive/` | independently runnable post-Send RAG path |
 | `stream/` | independently runnable StreamRAG path for typed input |
+| `native/` | Rust `snapshot_delta` hot path (PyO3), with a Python fallback |
 | `shared/` | only behavior that must be identical across paths |
 | `frontend/` | route hub and browser UI; no benchmark logic |
 | `comparison/` | headless provisioning, replay, scoring, and artifacts |
@@ -67,6 +68,13 @@ all five first-token races, with a median paired reduction of 967.857 ms
 Removing `frontend/` leaves both APIs and the comparison CLI usable. Removing
 `comparison/` leaves both APIs and the frontend usable. Neither RAG path imports
 or calls the other.
+
+StreamRAG's per-draft delta analysis (`SnapshotAnalyzer.analyze`, the pre-Send
+hot path) is implemented in Rust under `native/snapshot_delta/` and loaded through
+an import seam in `stream/snapshot.py`. When the `streamrag_snapshot` wheel is
+absent the identical pure-Python implementation runs instead, so the module is a
+measured speedup, not a dependency. Build it locally with `make native` and prove
+parity plus the microbenchmark with `make bench-native`.
 
 ## Documentation
 

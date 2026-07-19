@@ -19,7 +19,7 @@ DEV_QUERY_LIMIT ?= 5
 DEV_PREDICTIONS ?= comparison/benchmark/results/dev-comparison/predictions.jsonl
 DEV_SUMMARY ?= comparison/benchmark/results/dev-comparison/summary.json
 
-.PHONY: setup setup-python setup-frontend dev-naive dev-stream dev-frontend \
+.PHONY: setup setup-python setup-frontend native bench-native dev-naive dev-stream dev-frontend \
 	check check-shared check-naive check-stream check-comparison \
 	check-frontend build verify-data crag-source rebuild-dataset sync-naive sync-stream \
 	benchmark-inference-bundle benchmark-services-check benchmark-services-sync \
@@ -35,6 +35,16 @@ setup-python:
 setup-frontend:
 	cd frontend && npm ci
 
+# Build the native Rust snapshot backend into the local venv (optional; the
+# stream service falls back to pure Python when this wheel is absent).
+native:
+	cd native/snapshot_delta && VIRTUAL_ENV=$(CURDIR)/.venv uvx maturin develop --release
+
+# Prove the native and Python backends produce identical output and print the
+# per-call microbenchmark used in the write-up.
+bench-native: native
+	uv run python native/parity_bench.py
+
 dev-naive:
 	mkdir -p $(APP_STATE_ROOT)/naive
 	ALLOW_UNREVIEWED_DATASET=1 QDRANT_PATH=$(APP_STATE_ROOT)/naive/qdrant \
@@ -42,7 +52,7 @@ dev-naive:
 		METRICS_LOG=$(APP_STATE_ROOT)/naive/requests.jsonl \
 		uv run uvicorn naive.api:app --reload --host 127.0.0.1 --port 8001
 
-dev-stream:
+dev-stream: native
 	mkdir -p $(APP_STATE_ROOT)/stream
 	ALLOW_UNREVIEWED_DATASET=1 QDRANT_PATH=$(APP_STATE_ROOT)/stream/qdrant \
 		RUNTIME_DB=$(APP_STATE_ROOT)/stream/runtime.sqlite3 \
@@ -60,7 +70,7 @@ check-naive:
 	uv run ruff check shared naive
 	uv run pytest -q shared/tests naive/tests
 
-check-stream:
+check-stream: native
 	uv run ruff check shared stream
 	uv run pytest -q shared/tests stream/tests
 
