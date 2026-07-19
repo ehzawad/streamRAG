@@ -44,9 +44,11 @@ in its own persistent volume; no SQLite server or host installation is required.
   [`data/crag_eval/documents.jsonl.bz2`](data/crag_eval/documents.jsonl.bz2).
 - Index: 400-token chunks with 50-token overlap, producing exactly 1,000 Qdrant
   points per path with `text-embedding-3-large`.
-- Evaluation: 5 visible development questions and 10 sealed test questions.
-- Status: `candidate_pending_human_review`; the sealed final benchmark has not
-  been run.
+- Evaluation: 5 development questions and 10 held-out test questions, with gold
+  answers in [`data/crag_eval/test_gold.jsonl`](data/crag_eval/test_gold.jsonl).
+- Benchmark: one path (`make benchmark` then `make score`) run locally on the
+  committed candidate corpus (`approval_status = candidate_pending_human_review`),
+  loaded with `ALLOW_UNREVIEWED_DATASET=1`. There is no separate sealed/final run.
 
 The retained real-API development run completed 10/10 path outputs. Both paths
 scored 5/5 on the automatic answer, support, and citation checks. StreamRAG won
@@ -93,8 +95,10 @@ make check
 make docker-config
 ```
 
-The committed corpus is checksum-bound; each service verifies those checksums
-when it loads the dataset, so no separate data-verification step is required.
+`make check` runs Python lint (`ruff`) and a production frontend build; the final
+repo ships no pytest suite. The committed corpus is checksum-bound; each service
+verifies those checksums when it loads the dataset, so no separate
+data-verification step is required.
 
 The local stack has no authentication and binds host ports to loopback. Do not
 publish it unchanged: a network deployment needs TLS, identity and authorization,

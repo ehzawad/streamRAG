@@ -70,6 +70,11 @@ The frontend holds at most one active snapshot request plus one replaceable
 latest draft. Send cancels obsolete snapshot transport without waiting. Compare
 starts both commits concurrently but preserves separate backend sessions.
 
+Snapshot delta analysis runs through a Rust native `SnapshotAnalyzer` backend
+(`native/snapshot_delta/`, PyO3 module `streamrag_snapshot`) with a pure-Python
+fallback in `stream/snapshot.py`; build and benchmark it with `make native` and
+`make bench-native`.
+
 ## Agent, tool, and memory
 
 - Answer model: `gpt-5.6-sol`, medium reasoning.
@@ -97,9 +102,9 @@ cost. StreamRAG separately reports trigger calls, speculation, evidence lead,
 reuse, stale work, cancellation, and fallback. Missing provider usage is marked
 as a lower bound, never counted as zero.
 
-Gold is unavailable to both services and the inference runner. The offline scorer
-receives it only after content-addressed predictions are finalized. Automatic
-answer and citation checks are not presented as human semantic accuracy.
+Gold is not read by either service or by the single benchmark runner. The offline
+scorer reads it only after predictions are finalized and hashed. Automatic answer
+and citation checks are not presented as human semantic accuracy.
 
 ## State and concurrency
 
@@ -126,14 +131,6 @@ results. A public deployment therefore needs TLS, authentication and authorizati
 principal-bound sessions, rate and spend limits, protected index administration,
 secret management, backups, retention, abuse monitoring, and load/security tests.
 Changing a bind address alone is not a deployment plan.
-
-## Stable reproducibility identifiers
-
-Repository branding does not rewrite checksum-bound protocol identities. The
-existing dataset selection seed, evaluation freeze domain, and index pipeline
-version remain unchanged because changing them would select a different corpus,
-invalidate freeze IDs, or force unrelated index provenance drift. They are
-compatibility identifiers, not user-facing product names.
 
 ## References
 
