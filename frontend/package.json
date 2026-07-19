@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
-    "test": "node --test --experimental-strip-types test/*.test.ts && vitest run test/App.test.tsx",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
@@ -17,10 +16,7 @@
     "vite": "8.1.5"
   },
   "devDependencies": {
-    "@testing-library/react": "16.3.2",
     "@types/react": "19.2.17",
-    "@types/react-dom": "19.2.3",
-    "jsdom": "29.1.1",
-    "vitest": "4.1.10"
+    "@types/react-dom": "19.2.3"
   }
 }

@@ -14,7 +14,3 @@ It owns:
 Naive RAG owns committed-text retrieval. StreamRAG owns draft analysis,
 speculation, and reuse. `frontend/` owns the GUI, while `comparison/` owns replay
 and scoring. `shared/` imports none of those packages and is not runnable alone.
-
-```bash
-uv run pytest -q shared/tests
-```

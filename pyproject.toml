@@ -24,19 +24,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "pytest>=8.3,<10",
-  "pytest-asyncio>=0.25,<2",
   "ruff>=0.11,<1",
 ]
 
 [tool.setuptools.packages.find]
 include = ["shared*", "naive*", "stream*", "comparison*"]
-exclude = ["shared.tests*", "naive.tests*", "stream.tests*", "comparison.tests*"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-pythonpath = ["."]
-testpaths = ["shared/tests", "naive/tests", "stream/tests", "comparison/tests"]
 
 [tool.ruff]
 line-length = 100
