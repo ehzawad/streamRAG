@@ -35,19 +35,19 @@ Reproduce with two isolated services (`make benchmark-services-serve`) then
 
 | Path | Answer proxy | Support + citation | Median TTFT | p95 TTFT | Median total | Model calls/output | Cost/output |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Naive | 100% | 100% | 2,331 ms | 5,234 ms | 3,284 ms | 1.2 | $0.0125 complete |
-| StreamRAG | 100% | 100% | 1,414 ms | 5,964 ms | 2,205 ms | 4.2 | ≥ $0.0243 lower bound |
+| Naive | 100% | 100% | 2,274 ms | 6,818 ms | 2,860 ms | 1.2 | $0.0125 complete |
+| StreamRAG | 100% | 100% | 1,185 ms | 6,479 ms | 1,814 ms | 4.1 | ≥ $0.0239 lower bound |
 
 Paired (10 A/B pairs):
 
-- StreamRAG TTFT wins: **9/10**;
-- median TTFT delta: **-942 ms (-46.4%)**;
-- median total-time delta: **-723 ms**;
+- StreamRAG TTFT wins: **10/10**;
+- median TTFT delta: **-782 ms (-42.1%)**;
+- median total-time delta: **-868 ms**;
 - exact speculative evidence reuse (`presubmit_reuse`): **10/10**;
 - automatic-accuracy delta: **0** (both correct on all 10; 10/10 same outcome).
 
-Honest trade-off: StreamRAG cuts perceived latency (median TTFT down 46.4%) at
-higher cost. It issues about 4.2 model calls per output versus Naive's 1.2 (a
+Honest trade-off: StreamRAG cuts perceived latency (median TTFT down 42.1%) at
+higher cost. It issues about 4.1 model calls per output versus Naive's 1.2 (a
 trigger decision plus speculative retrieval while typing), so its per-output cost
 is roughly double and is reported as a lower bound because cancelled speculative
 calls do not always return provider usage. Accuracy is identical on this set, so

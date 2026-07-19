@@ -50,10 +50,10 @@ in its own persistent volume; no SQLite server or host installation is required.
   committed candidate corpus (`approval_status = candidate_pending_human_review`),
   loaded with `ALLOW_UNREVIEWED_DATASET=1`. There is no separate sealed/final run.
 
-The retained real-API development run completed 10/10 path outputs. Both paths
-scored 5/5 on the automatic answer, support, and citation checks. StreamRAG won
-all five first-token races, with a median paired reduction of 967.857 ms
-(41.879%). This is development evidence, not a final accuracy claim.
+The committed real-API run completed 20/20 path outputs with no failures. Both
+paths passed the automatic answer, support, and citation checks on all 10 test
+questions. StreamRAG won every first-token race, with a median paired reduction
+of 782 ms (42.1%). This is small-scale local evidence, not a final accuracy claim.
 
 ## Structure
 
