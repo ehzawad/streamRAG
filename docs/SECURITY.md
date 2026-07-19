@@ -12,14 +12,17 @@ not be exposed to a LAN or the public internet.
 Container services may listen on `0.0.0.0` internally, but host ports remain
 loopback-only. The frontend proxies same-origin `/api/naive/*` and
 `/api/stream/*`; backend port numbers are not a public-browser contract. CORS
-limits browser origins; it is not authentication.
+limits browser origins; it is not authentication. The two Qdrant servers have
+no published host ports and are reachable only from their respective API on
+separate internal Compose networks.
 
 ## What is protected
 
 - `OPENAI_API_KEY` stays in API process environments and is never sent to the
   browser.
-- `.env`, Qdrant, SQLite, logs, metrics, and runtime state are excluded from Git
-  and Docker build context.
+- `.env`, generated Qdrant indexes, SQLite, logs, metrics, and runtime state are
+  excluded from Git and Docker build context. The fixed corpus and evaluation
+  metadata are intentionally committed.
 - Naive and Stream use separate vector stores, databases, logs, sessions, caches,
   and process identities.
 - Status endpoints expose reproducibility configuration and hashes, not secrets.
@@ -54,6 +57,10 @@ Each process validates immutable settings at startup; changes require restart.
 Python dependencies are pinned in `uv.lock` and installed with
 `uv sync --frozen`. Frontend dependencies are pinned by
 `frontend/package-lock.json` and installed with `npm ci`.
+
+Compose pins the unprivileged Qdrant image by version and multi-architecture
+digest. Its unauthenticated ports remain private; a networked Qdrant deployment
+would require transport security and authentication.
 
 ## Before network deployment
 

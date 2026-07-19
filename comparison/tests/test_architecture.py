@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -75,6 +76,69 @@ def test_frontend_exposes_stable_single_origin_routes() -> None:
     assert 'naive: "/naive"' in routes
     assert 'stream: "/stream"' in routes
     assert 'compare: "/compare"' in routes
+
+
+def _compose_service(compose: str, name: str) -> str:
+    match = re.search(rf"^  {re.escape(name)}:\n", compose, flags=re.MULTILINE)
+    assert match is not None
+    start = match.start()
+    next_match = re.search(r"^  [a-z0-9-]+:\n", compose[match.end() :], flags=re.MULTILINE)
+    end = match.end() + next_match.start() if next_match else len(compose)
+    return compose[start:end]
+
+
+def test_docker_stack_isolates_persistent_state() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    naive_api = _compose_service(compose, "naive")
+    stream_api = _compose_service(compose, "stream")
+    naive_qdrant = _compose_service(compose, "qdrant-naive")
+    stream_qdrant = _compose_service(compose, "qdrant-stream")
+
+    assert "QDRANT_URL: http://qdrant-naive:6333" in naive_api
+    assert "QDRANT_URL: http://qdrant-stream:6333" in stream_api
+    assert "QDRANT_API_KEY: \"\"" in naive_api
+    assert "QDRANT_API_KEY: \"\"" in stream_api
+    assert "restart: unless-stopped" in naive_api
+    assert "restart: unless-stopped" in stream_api
+    assert '127.0.0.1:8001/v1/health' in naive_api
+    assert '127.0.0.1:8002/v1/health' in stream_api
+    assert ".get('ok')" in naive_api
+    assert ".get('ok')" in stream_api
+    assert "naive-runtime:/app/var" in naive_api
+    assert "stream-runtime:/app/var" in stream_api
+    assert "networks:\n      - edge\n      - naive-data" in naive_api
+    assert "networks:\n      - edge\n      - stream-data" in stream_api
+    assert "stream-data" not in naive_api
+    assert "naive-data" not in stream_api
+
+    image = "qdrant/qdrant:v1.18.3-unprivileged@sha256:"
+    assert image in naive_qdrant
+    assert image in stream_qdrant
+    assert 'QDRANT__TELEMETRY_DISABLED: "true"' in naive_qdrant
+    assert 'QDRANT__TELEMETRY_DISABLED: "true"' in stream_qdrant
+    assert "naive-qdrant:/qdrant/storage" in naive_qdrant
+    assert "stream-qdrant:/qdrant/storage" in stream_qdrant
+    assert "networks:\n      - naive-data" in naive_qdrant
+    assert "networks:\n      - stream-data" in stream_qdrant
+    assert "ports:" not in naive_qdrant
+    assert "ports:" not in stream_qdrant
+    assert "stream-data" not in naive_qdrant
+    assert "naive-data" not in stream_qdrant
+    assert "6333:6333" not in compose
+    assert (
+        "networks:\n"
+        "  edge:\n"
+        "  naive-data:\n"
+        "    internal: true\n"
+        "  stream-data:\n"
+        "    internal: true"
+    ) in compose
+
+    frontend = _compose_service(compose, "frontend")
+    assert "restart: unless-stopped" in frontend
+    assert "http://127.0.0.1/healthz" in frontend
+    assert "condition: service_healthy" in frontend
+    assert "networks:\n      - edge" in frontend
 
 
 def test_app_stack_does_not_depend_on_comparison_state() -> None:

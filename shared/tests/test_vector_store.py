@@ -71,6 +71,42 @@ def chunk(chunk_id: str, text: str) -> Chunk:
     )
 
 
+def test_remote_qdrant_uses_async_client_without_local_state(tmp_path, monkeypatch) -> None:
+    calls = []
+
+    class FakeAsyncQdrantClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "shared.data.vector_store.AsyncQdrantClient",
+        FakeAsyncQdrantClient,
+    )
+    config = replace(
+        settings,
+        qdrant_url="http://qdrant-naive:6333",
+        qdrant_api_key=None,
+        qdrant_path=tmp_path / "unused-local-qdrant",
+        runtime_db=tmp_path / "state.sqlite3",
+    )
+
+    store = QdrantVectorStore(
+        config,
+        FakeEmbedder(),
+        IndexStateRepository(config.runtime_db),
+    )
+
+    assert calls == [
+        {
+            "url": "http://qdrant-naive:6333",
+            "api_key": None,
+            "timeout": 15,
+        }
+    ]
+    assert store._local_executor is None
+    assert not config.qdrant_path.exists()
+
+
 @pytest.mark.asyncio
 async def test_incremental_sync_embeds_only_changes(tmp_path) -> None:
     config = replace(
