@@ -1,7 +1,7 @@
 {
   "backend_instance_ids": {
-    "naive": "9ad58e94-fee8-49c7-9aa0-03c64f4fd51d",
-    "stream": "2f30d8b3-bd83-423d-92c4-7597de996c3c"
+    "naive": "b201b4a1-340d-41fe-88a0-39323818fd75",
+    "stream": "449eec16-87e0-4bef-8da0-3a698bc880b6"
   },
   "benchmark_harness_sha256": {
     "run_benchmark.py": "4f51bfd2dad0a23e9bc2db8b76a9930741eace11c4a370e9cdfcb253615ee2a2",
@@ -41,12 +41,12 @@
     "index_pipeline_version"
   ],
   "completed_outputs": 10,
-  "completed_unix_s": 1784410884.731183,
-  "created_unix_s": 1784410679.1347451,
+  "completed_unix_s": 1784419993.802458,
+  "created_unix_s": 1784419793.992886,
   "data_status": {
     "naive": {
       "approval_status": "candidate_pending_human_review",
-      "backend_source_sha256": "208c707d17cb2e9023e8c3d5ecb782024519b3694fcbd94868159253f428b70f",
+      "backend_source_sha256": "73e457e7d81e0c212ef9543067e6effdc9d23666b84504f3f17ac99ee34ffb5b",
       "config_hash": "0c20b7321230dbd092573f2f273324ddc8a81e3c527e756d2361a3a6ecf7976a",
       "configuration": {
         "answer_timeout_s": 30.0,
@@ -87,19 +87,19 @@
       "index_version": 1,
       "indexed_chunks": 1000,
       "indexed_desired_chunks": 1000,
-      "instance_id": "9ad58e94-fee8-49c7-9aa0-03c64f4fd51d",
+      "instance_id": "b201b4a1-340d-41fe-88a0-39323818fd75",
       "metrics_contract_version": 1,
       "model": "gpt-5.6-sol",
       "reasoning_effort": "medium",
       "service_tier": "default",
       "serving_dataset_checksum": "a9c5dedb3525fd3475e027a50ac6b941df5c0396faf7d9c5e1c8c6ccb27a6de2",
-      "shared_source_sha256": "fcdc3d2834b83ec11df4958e2a8a7ab4d33e561a85c48e28f25dddd4eb3a5f2d",
+      "shared_source_sha256": "eff11fedd08a9307f7fc2ed5d2ecd094b00e5ed09edf2bf732bf3edc3188c3ac",
       "summary_reasoning_effort": "low",
       "supports_snapshots": false
     },
     "stream": {
       "approval_status": "candidate_pending_human_review",
-      "backend_source_sha256": "1b346c02fe3c3e63d3b2c2b547df8c5bd2920530b0af4c9850f4adf40a2f9443",
+      "backend_source_sha256": "6d70b4681af6ce7d832af99a01f1d808a829fe7294f3fffc57dc92dfbe843cd2",
       "config_hash": "0c20b7321230dbd092573f2f273324ddc8a81e3c527e756d2361a3a6ecf7976a",
       "configuration": {
         "answer_timeout_s": 30.0,
@@ -140,7 +140,7 @@
       "index_version": 1,
       "indexed_chunks": 1000,
       "indexed_desired_chunks": 1000,
-      "instance_id": "2f30d8b3-bd83-423d-92c4-7597de996c3c",
+      "instance_id": "449eec16-87e0-4bef-8da0-3a698bc880b6",
       "metrics_contract_version": 1,
       "model": "gpt-5.6-sol",
       "parallel_raw_retrieval": true,
@@ -148,7 +148,7 @@
       "service_tier": "default",
       "serving_dataset_checksum": "a9c5dedb3525fd3475e027a50ac6b941df5c0396faf7d9c5e1c8c6ccb27a6de2",
       "settled_draft_delay_ms": 500,
-      "shared_source_sha256": "fcdc3d2834b83ec11df4958e2a8a7ab4d33e561a85c48e28f25dddd4eb3a5f2d",
+      "shared_source_sha256": "eff11fedd08a9307f7fc2ed5d2ecd094b00e5ed09edf2bf732bf3edc3188c3ac",
       "summary_reasoning_effort": "low",
       "supports_snapshots": true,
       "trigger_interval_ms": 500,
@@ -175,7 +175,7 @@
   "prediction_rows_expected": 10,
   "prediction_rows_observed": 10,
   "predictions": "predictions.jsonl",
-  "predictions_sha256": "4a4a2afbf9eb314bd992d5bdf1f02111374aa1c3d79f8db4c1a7f9930233e13d",
+  "predictions_sha256": "fcfc42805602762f5f853174c296d7b4a5c61ce481c437cc3f86362690462dc5",
   "preregistered_protocol_gate": {
     "required_case_deadline_s": 45.0,
     "required_max_typing_drift_ms": 100.0,
@@ -206,7 +206,7 @@
   "repetitions": 1,
   "reportable": false,
   "run_status": "completed_non_reportable",
-  "run_tag": "b4917c4d19",
+  "run_tag": "1d04374fb7",
   "schema_version": 4,
   "scorer_isolation": {
     "binding": "query SHA-256 plus opaque evaluation freeze_id",
@@ -239,7 +239,7 @@
   },
   "timing_drift_gate": {
     "max_allowed_abs_drift_ms": 100.0,
-    "max_observed_abs_drift_ms": 2.2603750228881836,
+    "max_observed_abs_drift_ms": 2.270238484656147,
     "observations": 10,
     "status": "complete",
     "violations": 0

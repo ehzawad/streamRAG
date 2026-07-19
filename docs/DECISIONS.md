@@ -72,8 +72,9 @@ typing stays responsive. Send aborts obsolete snapshot transport without waiting
 - Post-answer compaction and saving share one absolute deadline. The visible
   answer does not wait for accounting to finish.
 
-FastAPI and OpenAI work are async. Embedded Qdrant is synchronous, so vector work
-runs on a dedicated worker instead of blocking the event loop.
+FastAPI and OpenAI work are async. Compose uses asynchronous clients to two
+private Qdrant servers. Standalone and headless embedded-Qdrant work runs on a
+dedicated worker instead of blocking the event loop.
 
 ## Models and index
 
@@ -83,7 +84,8 @@ runs on a dedicated worker instead of blocking the event loop.
 - Search: cosine, 400/50-token chunks, 8 candidates, 5 answer-context chunks
 - Structured agent: PydanticAI with strict local-corpus tool calling
 
-Live evidence uses real OpenAI and local Qdrant. Mocks are limited to unit tests.
+Live evidence uses real OpenAI and isolated local Qdrant stores. Mocks are
+limited to unit tests.
 
 ## Evaluation
 

@@ -1,111 +1,139 @@
 # Real-user verification
 
+**Recorded:** 2026-07-19
+
 **Scope:** development questions only while the dataset is
 `candidate_pending_human_review`. The unseen test split was not used.
 
-## UI acceptance
+## Tested stack
+
+The acceptance run used the real Docker Compose stack: nginx frontend, separate
+Naive and Stream APIs, two isolated Qdrant server containers, and two embedded
+SQLite files in persistent API volumes. Both indexes contained exactly 1,000
+`text-embedding-3-large` points from the committed corpus. Answers used real
+`gpt-5.6-sol` Responses API calls with medium reasoning; no live dependency was
+mocked.
 
 | Surface | URL | Expected behavior |
 |---|---|---|
 | Homepage | `http://127.0.0.1:5173/` | links to all three experiences |
-| Naive | `http://127.0.0.1:5173/naive` | no pre-Send retrieval; answer and citations after Send |
+| Naive | `http://127.0.0.1:5173/naive` | no pre-Send retrieval; cited answer after Send |
 | Stream | `http://127.0.0.1:5173/stream` | evidence may prepare while typing; no answer before Send |
-| Compare | `http://127.0.0.1:5173/compare` | the same commit sent to two isolated services |
+| Compare | `http://127.0.0.1:5173/compare` | one commit sent concurrently to two isolated services |
 
-Live acceptance requires a real `OPENAI_API_KEY`, real Responses calls,
-`text-embedding-3-large`, and local Qdrant. Unit-test stubs do not support live
-latency, correctness, cost, or reproducibility claims.
+The Qdrant services, volumes, SQLite databases, logs, sessions, caches, process
+identities, and private data networks were distinct; both APIs shared only the
+frontend edge network. Each API could resolve its own Qdrant hostname but not the
+peer's. The GUI used same-origin proxy paths; neither backend dispatched the
+other.
 
-The services must expose different implementation roles, instance IDs, Qdrant
-directories, SQLite databases, logs, sessions, and cache scopes. The GUI uses
-same-origin proxy paths; the CLI calls ports 8001 and 8002 directly. Neither
-backend may dispatch its peer.
+## Fair human-input protocol
 
-## Browser checklist
+Google Chrome was controlled through Playwright for navigation, Send, and DOM
+inspection. Native macOS Computer Use entered every character into the visible
+textbox; no paste, `fill`, or whole-string injection was used.
 
-Use headed Playwright with installed Google Chrome, then inspect the rendered
-result with native Computer Use.
+Every compared path received verbatim text and the same deterministic schedule:
 
-1. On Naive, type a development question and confirm no snapshot request occurs.
-2. On Stream, wait 500 ms after the final snapshot is delivered (about 900 ms
-   after the last keystroke in the side-by-side frontend). Confirm evidence can
-   become ready but the answer remains hidden.
-3. In Compare mode, confirm snapshots go only to Stream and both panels remain
-   answer-free before Send.
-4. Press Send and verify both services receive the same text and timestamp,
-   produce cited answers, persist the turn, and reach terminal SSE events.
-5. Ask a referential follow-up and confirm each path uses its own prior answer as
-   context. Select New chat and confirm that context and transcript both reset.
-6. Correct or revert a draft and confirm stale work is not promoted or resent.
-7. Exercise route changes and cancellation without freezing input.
-8. Check the console, network requests, and final rendered panels.
+- base delay after character `i`: `48 + ((i * 37) % 58)` ms;
+- spaces add `28 + ((i * 13) % 40)` ms;
+- every fourth space adds a 170 ms thinking pause;
+- comma, semicolon, or colon adds 210 ms; sentence punctuation adds 300 ms;
+- Send follows a fixed 2,700 ms dwell after the final character.
 
-Browser timings are interaction evidence, not the formal benchmark. The browser
-starts both paths concurrently; the benchmark measures them sequentially.
+The three standalone prompts were:
 
-## Recorded browser evidence
+1. `how long does a stock need to be held to make capital gains long term?`
+2. `which dune movie has better music, 1984 or 2021?`
+3. `what is the name of the bad bunny album released before nadie sabe lo que va a pasar manana?`
 
-All routed surfaces passed in Chrome with human-speed keyboard events, real
-provider calls, and the same two-turn conversation:
+The ASCII spelling `manana` was fixed before measurement and used identically
+everywhere. The four-turn conversation used prompt 1 followed by:
 
-- **Naive:** both turns were correct and cited; the follow-up resolved to a
-  short-term capital gain. TTFT was 3,475 ms then 3,433 ms.
-- **Stream:** evidence was ready before Send on both turns; both answers were
-  correct and cited. TTFT was 1,541 ms then 1,298 ms.
-- **Compare:** both isolated histories resolved the same follow-up correctly.
-  Stream was faster on the first turn (997 vs 1,939 ms TTFT) and slower on the
-  second (2,397 vs 1,969 ms), showing normal provider variance rather than a
-  guaranteed per-request win.
-- **Direct Stream service UI:** a second referential question correctly resolved
-  the 2021 Dune film and answered Hans Zimmer; both turns reused exact pre-Send
-  evidence.
+1. `Does exactly one year qualify?`
+2. `When does that holding period start?`
+3. `Summarize both rules in one sentence.`
 
-The homepage and all three deep links loaded through one origin. New chat removed
-the transcript and rotated the active sessions. A direct Stream pre-Send reset
-also accepted a new human-typed draft and prepared fresh evidence. No answer
-appeared before Send.
+## Four recorded scenarios
 
-## Reproduce the development run
+Times are submit-to-first-token (TTFT) and submit-to-completion milliseconds.
+Each arrow shows the Naive average, Stream average, and Stream reduction.
+
+| Scenario | Work per path | Average TTFT | Average total | Observed correctness |
+|---|---:|---:|---:|---:|
+| Standalone, fresh chat | 3 questions | 3,749 → 1,641.333 (**56.219%**) | 4,673 → 3,159.667 (**32.385%**) | 3/3 both |
+| Simultaneous `/compare` | 3 questions | 1,876.333 → 1,307.667 (**30.307%**) | 2,745.333 → 2,316.333 (**15.627%**) | 3/3 both |
+| Multi-turn `/compare` | 4 turns | 1,898.25 → 1,156.75 (**39.062%**) | 2,966.75 → 1,785.25 (**39.825%**) | 4/4 both |
+| Multi-turn solo routes | 4 turns | 2,201.25 → 1,547.5 (**29.699%**) | 3,272 → 2,242.25 (**31.472%**) | 4/4 both |
+
+Raw timings preserve individual variance:
+
+| Scenario | Naive TTFT | Stream TTFT | Naive total | Stream total |
+|---|---|---|---|---|
+| Standalone | 4,297 / 3,234 / 3,716 | 1,957 / 1,664 / 1,303 | 5,393 / 4,622 / 4,004 | 3,069 / 4,800 / 1,610 |
+| Simultaneous | 1,576 / 2,048 / 2,005 | 1,799 / 919 / 1,205 | 2,778 / 3,152 / 2,306 | 2,756 / 2,660 / 1,533 |
+| Multi-turn Compare | 1,844 / 1,750 / 1,821 / 2,178 | 915 / 917 / 1,110 / 1,685 | 2,614 / 4,300 / 2,355 / 2,598 | 1,610 / 1,458 / 1,877 / 2,196 |
+| Multi-turn solo | 1,775 / 1,881 / 2,952 / 2,197 | 1,128 / 2,161 / 991 / 1,910 | 2,564 / 2,789 / 3,743 / 3,992 | 1,766 / 2,960 / 1,738 / 2,505 |
+
+Both paths correctly answered the three facts and all referential follow-ups.
+Compare retained separate histories, while each solo route retained its own four
+turns. Stream showed exact evidence ready before Send on all 14 runs, with no
+pre-Send answer and no Send fallback. Stream won 12/14 individual TTFT races and
+12/14 total-time races. Its TTFT losses were the simultaneous first turn and the
+solo one-year follow-up; its total-time losses were standalone Dune and that same
+solo follow-up. Stream also made more controller/retrieval calls, and its displayed
+cost remained a lower bound when cancelled calls lacked usage.
+
+These are diagnostic browser observations, not the formal benchmark. The sample
+is small, answers were inspected rather than hash-bound human-adjudicated, and
+provider variance can dominate individual requests. The exact manual protocol is
+retained above, but this is not a committed automated browser replay. The formal
+runner remains the source for reportable evaluation after dataset approval.
+
+## Clean-pipeline reproduction
+
+The final topology was rebuilt from empty generated volumes:
+
+- dataset verifier: 250 complete documents, 5 development questions, 10 sealed
+  test questions, 1,000 deterministic points, and all 9 checksummed files valid;
+- real index syncs: 47.049 s Naive and 44.990 s Stream, each embedding 1,000
+  chunks and 366,142 tokens;
+- ordinary `docker compose down` / `up` preserved all four named volumes and
+  restored both ready indexes without re-embedding;
+- `make check`: 209 Python tests, 16 frontend tests, and a production frontend
+  build passed;
+- controlled development evaluation through the Docker services: 10/10 path
+  runs in 199.810 s, complete artifact integrity, 5/5 automatic
+  correctness/support/citation checks for both paths, and 5/5 Stream TTFT wins;
+  median Stream-minus-Naive TTFT was -1,024.466 ms (-44.226%) and median total
+  time was -1,461.268 ms;
+- live audit after the browser run: 14/14 completions per path, 0 failures,
+  0 active runs, matching corpus/index hashes, and 1,000/1,000 physical points;
+- all five containers were healthy; no application traceback, exception, or
+  HTTP 4xx/5xx appeared in the final run logs.
+
+Reproduce the Docker path with:
 
 ```bash
 cp .env.example .env
-# Add a real OPENAI_API_KEY.
+# Add a real OPENAI_API_KEY and set ALLOW_UNREVIEWED_DATASET=1.
 make setup
 make verify-data
 make check
-make benchmark-dev-services-check
-make benchmark-dev-services-sync
+make docker-up
 
-# terminal A
-make benchmark-dev-services-serve
-
-# terminal B
+# In another terminal, once per fresh set of volumes:
+make docker-sync
 make benchmark-smoke
 make score-dev
 ```
 
-Normal reproduction uses the committed 250-document corpus, creates one real seed
-index, stops it, and clones it into two isolated stores. It does not download the
-705 MiB upstream release.
-
-Record elapsed time, hashes/fingerprints, 1,000 physical points per service, 10
-completed path outputs, and whether cost accounting is complete. Provider latency
-and first-time downloads vary; 15–20 minutes is a target, not a guarantee.
-
-## Recorded benchmark evidence
-
-- seed provisioning: 55.13 s, 250 documents, 1,000 points
-- runner: 205.92 s shell wall time, 10/10 outputs, complete integrity
-- both paths: 100% automatic answer/support/citation proxies; 0% human review
-- Stream: 5/5 TTFT wins; median delta -784.373 ms (-40.160%)
-- Naive cost: $0.05521131 complete
-- Stream observed cost: at least $0.09669918; paired cost comparison invalid
-
-Full interpretation is in [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
+`make docker-down` removes containers and preserves state. Only an intentional
+`docker compose down --volumes` deletes the generated indexes and SQLite files.
 
 ## Boundary
 
-FastAPI and OpenAI work are async; local Qdrant work runs on a dedicated worker.
-The browser keeps one active snapshot plus one replaceable latest draft and aborts
-obsolete transport at Send. This is sufficient for a local reviewer, not proof of
-production-scale concurrency or security.
+Compose uses asynchronous Qdrant clients; standalone and headless embedded mode
+moves synchronous Qdrant work off the event loop. SQLite is embedded in each API
+container and persisted as a separate volume-backed file. This supports the
+local assessment, not production-scale concurrency or public security claims.

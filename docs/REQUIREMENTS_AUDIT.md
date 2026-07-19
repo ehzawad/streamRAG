@@ -23,7 +23,7 @@ evidence.
 | Cost | provider usage, calls/tokens, explicit unpriced counters and lower-bound labels | paired delta only with complete accounting |
 | Correctness | answer/alias, false-premise, retrieved support, exact citation, optional hash-bound human adjudication | automatic proxies are not semantic accuracy |
 | Performance | completions, failures, timeouts, throughput, retrieval/fallback/reuse | common and Stream-only metrics separated |
-| Non-blocking UX | async HTTP/OpenAI, Qdrant worker isolation, bounded snapshot queue, cancellable SSE | local boundary; not production-scale claim |
+| Non-blocking UX | async HTTP/OpenAI/Qdrant in Compose, worker-isolated embedded fallback, bounded snapshot queue, cancellable SSE | local boundary; not production-scale claim |
 | Reproducible handoff | committed corpus, checksum verifier, one real seed build, isolated clones, 5-dev smoke and 10-test final protocols | target 15–20 minutes; record observed time |
 | Security boundary | one browser origin, internal API proxy, key remains server-side, no-auth threat model | public deployment requires an access layer |
 

@@ -11,17 +11,18 @@ trigger are out of scope.
 
 - **Knowledge base:** 250 complete CRAG-derived documents, deterministically
   split into exactly 1,000 chunks/local Qdrant points.
-- **Retrieval:** `text-embedding-3-large` at 3,072 dimensions. Embedded Qdrant
-  needs no account or API key.
-- **Evaluation:** 5 development questions and 10 sealed, unseen test questions.
-  The only dataset is [`data/crag_eval`](data/crag_eval).
+- **Retrieval:** `text-embedding-3-large` at 3,072 dimensions. Compose runs two
+  isolated local Qdrant servers; neither needs an external account or API key.
+- **Evaluation:** The complete bundle is committed at
+  [`data/crag_eval`](data/crag_eval): 5 development questions, 10 sealed test
+  questions, the corpus, gold, checksums, and review metadata.
 - **Gate:** status is `candidate_pending_human_review`. Development checks are
   allowed; the sealed test set cannot run until a reviewer approves and freezes
   the dataset and its checksums.
 
 The latest real-API development smoke run had equal 100% automatic answer and
 citation proxies. Stream won first-token latency on 5/5 questions, with a median
-784.373 ms (40.160%) improvement. This is directional development evidence,
+1,024.466 ms (44.226%) improvement. This is directional development evidence,
 not a final benchmark: the sample is small, no answers were human-adjudicated,
 and the sealed test set remains untouched. See
 [`docs/BENCHMARK_REPORT.md`](docs/BENCHMARK_REPORT.md).
@@ -60,10 +61,11 @@ make dev-stack
 ```
 
 In another terminal, run `make sync-app` once, then open the homepage at
-<http://127.0.0.1:5173/>. Each API builds and owns its own Qdrant, SQLite,
-metrics, session, and cache state under `var/`. Live indexing and answers use
-OpenAI and local vector search; no live-path dependency is mocked. The faster
-stopped-seed cloning workflow belongs only to the headless benchmark.
+<http://127.0.0.1:5173/>. Each standalone API builds and owns its own embedded
+Qdrant, SQLite, metrics, session, and cache state under `var/`. Live indexing
+and answers use OpenAI and local vector search; no live-path dependency is
+mocked. The faster stopped-seed cloning workflow belongs only to the headless
+benchmark.
 
 Exact standalone commands are in [`naive/README.md`](naive/README.md) and
 [`stream/README.md`](stream/README.md). Component contracts are in
@@ -110,21 +112,24 @@ make docker-config
 For the tested local Docker stack, set `OPENAI_API_KEY` and
 `ALLOW_UNREVIEWED_DATASET=1` in `.env`, then run `make docker-up`. From another
 terminal run `make docker-sync` once and open <http://127.0.0.1:5173/>. Stop and
-remove the containers with `make docker-down`. The override permits only local
-development on the candidate dataset; it does not approve or unseal evaluation
-data.
+remove the containers with `make docker-down`; all four named data volumes are
+preserved. Only an intentional `docker compose down --volumes` resets generated
+indexes and SQLite state. The override permits local development on the
+candidate dataset; it does not approve or unseal evaluation data.
 
 The Docker frontend is the only browser-facing origin. It serves `/`, `/naive`,
 `/stream`, and `/compare`, and proxies `/api/naive/*` and `/api/stream/*` to the
-isolated containers. A network deployment still needs TLS, authentication, rate
-and spend limits, and persistent volumes; do not publish this no-auth assessment
-unchanged.
+isolated APIs. Each API has its own volume-backed SQLite state and private
+Qdrant server/volume; Qdrant has no host port. A network deployment still needs
+durable backups, TLS, authentication, and rate and spend limits; do not publish
+this no-auth assessment unchanged.
 
 The committed corpus avoids the 705 MiB upstream download. The APIs are async;
-synchronous local-Qdrant work runs off the event loop. This is a bounded local
-assessment, not a production multi-user service. All ports bind to loopback and
-there is no authentication, authorization, rate limiting, or tenant isolation.
-Do not expose the stack to a LAN or public interface. See
+Compose uses asynchronous Qdrant clients, while standalone and headless
+embedded-Qdrant calls run off the event loop. This is a bounded local assessment,
+not a production multi-user service. All host ports bind to loopback and there
+is no authentication, authorization, rate limiting, or tenant isolation. Do not
+expose the stack to a LAN or public interface. See
 [`docs/SECURITY.md`](docs/SECURITY.md) and
 [`docs/REAL_USER_VERIFICATION.md`](docs/REAL_USER_VERIFICATION.md).
 

@@ -6,16 +6,16 @@ Configuration: `gpt-5.6-sol` at answer `medium`, trigger `low`, and summary `low
 
 | Path | Automatic answer/alias proxy | Support+valid citation | Median TTFT | Median total | Usage-accounted model calls | Controllers | Retrievals | Dynamic function tools | Observed run cost |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| naive | 100.0% | 100.0% | 2556 ms | 3178 ms | 5 | 0 | 5 | 0 | $0.0552 |
-| stream | 100.0% | 100.0% | 1529 ms | 2328 ms | 16 | 17 | 15 | 0 | ≥$0.0967 |
+| naive | 100.0% | 100.0% | 2161 ms | 3588 ms | 5 | 0 | 5 | 0 | $0.0550 |
+| stream | 100.0% | 100.0% | 1230 ms | 2138 ms | 17 | 19 | 15 | 0 | ≥$0.0996 |
 
 ## Paired outcome
 
 - Stream TTFT wins: 100.0%
-- Median Stream minus Naive TTFT: -784 ms
-- Median Stream minus Naive total: -766 ms
+- Median Stream minus Naive TTFT: -1024 ms
+- Median Stream minus Naive total: -1461 ms
 - Mean Stream minus Naive automatic-proxy score: 0.0 percentage points
-- Measured wall time: 205.6 s
+- Measured wall time: 199.8 s
 
 Dynamic function tools means model-issued `search_local_crag` calls after the
 shared primary retrieval. Controller and retrieval calls are reported separately.
@@ -28,6 +28,6 @@ Human semantic-adjudication coverage is 0%; the automatic proxy is not a claim o
 
 | Candidate class | Questions | Stream TTFT wins | Median paired TTFT delta | Automatic-proxy delta |
 |---|---:|---:|---:|---:|
-| early_stabilization | 3 | 100.0% | -705 ms | 0.0 pp |
-| late_stabilization | 1 | 100.0% | -1026 ms | 0.0 pp |
-| revision_or_ambiguity | 1 | 100.0% | -784 ms | 0.0 pp |
+| early_stabilization | 3 | 100.0% | -1306 ms | 0.0 pp |
+| late_stabilization | 1 | 100.0% | -470 ms | 0.0 pp |
+| revision_or_ambiguity | 1 | 100.0% | -1024 ms | 0.0 pp |
