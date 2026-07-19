@@ -30,7 +30,3 @@ before the dataset review is complete. Use the separate `frontend/` for chat.
 
 StreamRAG reports the common comparison metrics plus speculation, evidence
 lead/reuse, stale-work, cancellation, and fallback diagnostics.
-
-```bash
-uv run pytest -q shared/tests stream/tests
-```

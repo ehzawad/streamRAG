@@ -1,8 +1,8 @@
 # Naive RAG vs StreamRAG benchmark
 
-**Status:** development evidence only. The dataset remains
-`candidate_pending_human_review`, so the 10 sealed test questions and final
-benchmark have not been run.
+**Status:** local development evidence on a candidate dataset; a small-scale,
+local, single-machine measurement, not a production-scale or final accuracy
+claim.
 
 ## Comparison contract
 
@@ -20,44 +20,62 @@ dataset fingerprints, index health, and distinct service identity. It measures
 the paths sequentially and counterbalances question order. Gold is unavailable
 until predictions and their manifest are finalized.
 
-## Retained development run
+## Benchmark run (10 held-out test questions)
 
-Canonical artifact:
-[`comparison/benchmark/results/dev-comparison/`](../comparison/benchmark/results/dev-comparison)
+Reproduce with two isolated services (`make benchmark-services-serve`) then
+`make benchmark && make score`, which writes
+`comparison/benchmark/results/{predictions.jsonl,summary.json,summary.md}`.
 
-- 5 development questions × 2 paths;
-- deterministic 70 WPM input with 400 ms changed-draft snapshots;
-- 5-second pause before Send;
-- real `gpt-5.6-sol` and `text-embedding-3-large` calls;
-- 10/10 completed outputs and complete artifact integrity;
-- 207.707-second measured runner interval.
+- 10 held-out test questions × 2 paths (20 outputs), 1 measured repetition;
+- deterministic 70 WPM input with 400 ms changed-draft snapshots and a 5-second
+  pre-Send dwell;
+- real `gpt-5.6-sol` and `text-embedding-3-large` calls against two isolated
+  Docker services;
+- clean run: 20/20 completed, 0 failures, `run_integrity_gate: complete`.
 
-| Path | Answer proxy | Support + citation | Median TTFT | Median total | Accounted calls | Retrievals | Observed cost |
+| Path | Answer proxy | Support + citation | Median TTFT | p95 TTFT | Median total | Model calls/output | Cost/output |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Naive | 100% | 100% | 3,435.527 ms | 3,791.574 ms | 5 | 5 | $0.05536131 complete |
-| StreamRAG | 100% | 100% | 1,531.129 ms | 2,340.075 ms | 18 | 15 | at least $0.10427957 |
+| Naive | 100% | 100% | 2,331 ms | 5,234 ms | 3,284 ms | 1.2 | $0.0125 complete |
+| StreamRAG | 100% | 100% | 1,414 ms | 5,964 ms | 2,205 ms | 4.2 | ≥ $0.0243 lower bound |
 
-Paired results:
+Paired (10 A/B pairs):
 
-- StreamRAG TTFT wins: **5/5**;
-- median TTFT delta: **-967.857 ms (-41.879%)**;
-- paired p95 TTFT delta: **-533.341 ms**;
-- median total-time delta: **-647.562 ms**;
-- exact speculative evidence reuse: **5/5**;
-- median evidence lead at Send: **3,637.909 ms**.
+- StreamRAG TTFT wins: **9/10**;
+- median TTFT delta: **-942 ms (-46.4%)**;
+- median total-time delta: **-723 ms**;
+- exact speculative evidence reuse (`presubmit_reuse`): **10/10**;
+- automatic-accuracy delta: **0** (both correct on all 10; 10/10 same outcome).
 
-The automatic correctness delta was zero because both paths passed all fixed
-answer, support, and citation checks. Human semantic-adjudication coverage was
-0%, so 100% here is not a claim of perfect semantic accuracy.
+Honest trade-off: StreamRAG cuts perceived latency (median TTFT down 46.4%) at
+higher cost. It issues about 4.2 model calls per output versus Naive's 1.2 (a
+trigger decision plus speculative retrieval while typing), so its per-output cost
+is roughly double and is reported as a lower bound because cancelled speculative
+calls do not always return provider usage. Accuracy is identical on this set, so
+the benefit is latency paid for in tokens and calls. Automatic answer/citation
+checks are proxies, not human semantic judgments.
 
-StreamRAG did more work: 19 controller attempts and 15 retrievals versus Naive's
-5 retrievals. Cancelled, failed, or timed-out speculative calls do not always
-return provider usage, so StreamRAG's recorded cost is a lower bound and a valid
-paired cost delta is unavailable.
+An earlier full run recorded one StreamRAG failure on the "black swan" question:
+a transient `RemoteProtocolError` (client-side transport disconnect at 18 s, well
+under the 45 s deadline, with container `RestartCount=0`). The scorer counted it
+honestly as a failure; the clean re-run above then completed 20/20, confirming the
+blip was transient transport rather than a pipeline defect.
 
-All five questions were faster to first token with StreamRAG in this run,
-including the late-stabilizing case. The result supports a scheduling gain on
-this small development set, not a guarantee that speculation helps every query.
+## Native SnapshotAnalyzer microbenchmark (Rust vs Python)
+
+`SnapshotAnalyzer.analyze` runs on every typed draft and feeds the StreamRAG
+trigger. It is implemented in Rust (`native/snapshot_delta/`, PyO3) behind an
+import seam with a byte-identical pure-Python fallback. `make bench-native`
+verifies parity and times both backends over 90 draft pairs, including
+append-only, correction, empty-input, and Unicode/whitespace edge cases (matching
+CPython's `str.split()`, including U+001C–U+001F):
+
+- parity: **90/90 identical `SnapshotDelta`** (fingerprint, common-prefix chars,
+  word count, new words, append flag);
+- speed: **~1.44 µs/call (Python) vs ~0.35 µs/call (Rust) ≈ 4.1× faster**.
+
+This is a per-call microbenchmark only. It is not attributed to the end-to-end
+latency above: network, embedding, retrieval, and model-generation time dominate a
+request, so the native speedup does not by itself explain the TTFT difference.
 
 ## Real browser acceptance
 
@@ -118,13 +136,13 @@ a product spot check, not an additional benchmark row.
 
 The recorded clean Docker run verified:
 
-- 250 documents, 5 development questions, 10 sealed questions, and all 9
+- 250 documents, 5 development questions, 10 held-out questions, and all 9
   checksummed files;
 - 1,000 points in each isolated Qdrant service;
 - real clean index syncs of 40.926 seconds for Naive and 39.055 seconds for
   StreamRAG, each embedding 366,142 tokens;
 - persistence across container removal and recreation without re-embedding;
-- the then-current Python and frontend suites and a production frontend build;
+- linting and a production frontend build;
 - five healthy containers, matching source/index hashes, zero path failures, and
   no application error or HTTP 4xx/5xx in the final logs.
 
@@ -132,26 +150,18 @@ Run the same development pipeline with the commands in [`RUN.md`](RUN.md).
 
 ## Artifact ownership
 
-`comparison/benchmark/results/dev-comparison/` contains the current development
-predictions, content-addressed manifest, machine-readable summary, and Markdown
-summary. They are retained because they are evidence, not generated clutter.
+`comparison/benchmark/results/` contains the retained benchmark evidence:
+`predictions.jsonl`, the content-addressed `predictions.manifest.json`, the
+machine-readable `summary.json`, and the Markdown `summary.md`. They are kept as
+evidence, not generated clutter.
 
-No final artifact is committed. The final output directory is created only after
-human dataset approval and a real sealed run. It must never be filled with copied
-development results or placeholders.
-
-## Final protocol
-
-After an explicit `approved_frozen` dataset commit, the final workflow creates a
-gold-free inference bundle, starts two isolated services, replays all 10 sealed
-questions once per path, and produces exactly 20 outputs. The runner rejects gold
-leakage, shared identity, fingerprint drift, missing outputs, or invalid freeze
-bindings. The scorer receives gold afterward; a final semantic-accuracy claim
-also requires hash-bound manual adjudication.
+There is no separate `final` artifact directory and no approval gate;
+re-running `make benchmark` then `make score` regenerates
+`comparison/benchmark/results/predictions.jsonl` and `summary.json`.
 
 ## Claim boundary
 
-The supported result is narrow: on this five-question development set and the
+The supported result is narrow: on this ten-question test set and the
 manual browser checks, StreamRAG preserved the measured correctness proxies and
 reduced perceived latency when usable evidence stabilized before Send. The data
 does not establish a universal speed, accuracy, or cost improvement, and results

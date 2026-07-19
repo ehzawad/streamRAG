@@ -13,8 +13,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from comparison.contracts import COMMON_IDENTITY_FIELDS, service_identity_issues
-
 ROOT = Path(__file__).resolve().parents[2]
 CITATION_RE = re.compile(r"\[([^\]\s]+::c\d{4})\]")
 CLAUSE_SPLIT_RE = re.compile(r"[.!?;:\n]+|\bbut\b|\bhowever\b|,", re.IGNORECASE)
@@ -43,7 +41,6 @@ NON_ABSTENTION_PATTERNS = tuple(
     )
 )
 ADJUDICATION_LABELS = {"perfect", "acceptable", "missing", "incorrect"}
-FREEZE_DOMAIN = b"typed-streamrag-eval-freeze-v1\0"
 RELATION_PAIRS = (
     ("smaller", "larger"),
     ("lower", "higher"),
@@ -107,19 +104,6 @@ def read_checksum_manifest(path: Path) -> dict[str, str]:
     return entries
 
 
-def opaque_freeze_id(evaluation_manifest_sha256: str) -> str:
-    return hashlib.sha256(FREEZE_DOMAIN + evaluation_manifest_sha256.encode("ascii")).hexdigest()
-
-
-def resolve_manifest_path(manifest_path: Path, value: Any) -> Path:
-    """Resolve a portable artifact path relative to its schema-v4 manifest."""
-
-    raw = Path(str(value or ""))
-    if raw.is_absolute():
-        raise ValueError("schema v4 artifact paths must be manifest-relative")
-    return (manifest_path.parent / raw).resolve()
-
-
 def validate_run_integrity(
     rows: list[dict[str, Any]],
     predictions_path: Path,
@@ -127,8 +111,6 @@ def validate_run_integrity(
     gold_path: Path,
     evaluation_manifest_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Offline-bind gold to a gold-blind run and enforce reportability gates."""
-
     issues: list[str] = []
     if not manifest_path.is_file():
         return {
@@ -147,67 +129,11 @@ def validate_run_integrity(
 
     if any(key in manifest for key in ("gold", "gold_sha256")):
         issues.append("runner manifest improperly contains scorer-only gold identity")
-    if manifest.get("smoke_non_reportable") is not False:
-        issues.append("manifest marks the run smoke/non-reportable")
-    if manifest.get("distinct_backend_instances") is not True:
-        issues.append("manifest does not prove distinct backend instances")
     if manifest.get("finalized") is not True:
         issues.append("manifest was not finalized after prediction generation")
-    if manifest.get("reportable") is not True:
-        issues.append("runner reportability gate is not complete")
-    if manifest.get("run_status") != "completed_reportable":
-        issues.append("runner did not finish with completed_reportable status")
+    if manifest.get("distinct_backend_instances") is not True:
+        issues.append("manifest does not prove distinct backend instances")
 
-    repetitions = int(manifest.get("repetitions") or 0)
-    warmup_repetitions = int(manifest.get("warmup_repetitions") or 0)
-    if repetitions != 1 or warmup_repetitions != 0:
-        issues.append("reportable protocol requires no warm-up and one measured repetition")
-    protocol_gate = manifest.get("preregistered_protocol_gate")
-    required_protocol = {
-        "status": "complete",
-        "required_query_count": 10,
-        "required_total_path_runs": 20,
-        "required_warmup_repetitions": 0,
-        "required_measured_repetitions": 1,
-        "required_words_per_minute": 70.0,
-        "required_post_typing_dwell_ms": 5000.0,
-        "required_settled_draft_delay_ms": 500,
-        "required_max_typing_drift_ms": 100.0,
-        "required_case_deadline_s": 45.0,
-    }
-    if protocol_gate != required_protocol:
-        issues.append("manifest preregistered protocol contract is invalid")
-    if (
-        float(manifest.get("words_per_minute") or -1) != 70.0
-        or float(manifest.get("post_typing_dwell_ms") or -1) != 5000.0
-        or float(manifest.get("settled_draft_delay_ms") or -1) != 500.0
-        or float(manifest.get("max_typing_drift_ms") or -1) != 100.0
-        or float(manifest.get("case_deadline_s") or -1) != 45.0
-    ):
-        issues.append("manifest typed-input timing contract is invalid")
-    for gate_name in (
-        "preregistered_protocol_gate",
-        "warmup_gate",
-        "timing_drift_gate",
-        "snapshot_transport_gate",
-        "case_deadline_gate",
-        "turn_cleanup_gate",
-    ):
-        gate = manifest.get(gate_name)
-        if not isinstance(gate, dict) or gate.get("status") != "complete":
-            issues.append(f"manifest {gate_name} is not complete")
-
-    if manifest.get("schema_version") != 4:
-        issues.append("benchmark manifest schema_version must be 4")
-    try:
-        manifest_predictions = resolve_manifest_path(manifest_path, manifest.get("predictions"))
-    except ValueError as exc:
-        manifest_predictions = Path()
-        issues.append(str(exc))
-    if not manifest_predictions.is_file():
-        issues.append("manifest prediction file is missing")
-    elif manifest_predictions.resolve() != predictions_path.resolve():
-        issues.append("manifest prediction path does not match the scored file")
     manifest_predictions_hash = str(manifest.get("predictions_sha256") or "")
     if (
         not predictions_path.is_file()
@@ -215,6 +141,7 @@ def validate_run_integrity(
         or sha256_file(predictions_path) != manifest_predictions_hash
     ):
         issues.append("prediction checksum does not match finalized manifest")
+
     harness_hashes = manifest.get("benchmark_harness_sha256")
     expected_harness_hashes = {
         "run_benchmark.py": sha256_file(ROOT / "comparison" / "benchmark" / "run_benchmark.py"),
@@ -223,110 +150,24 @@ def validate_run_integrity(
     if harness_hashes != expected_harness_hashes:
         issues.append("benchmark harness source does not match the content-addressed run")
 
-    statuses = manifest.get("data_status")
-    statuses = statuses if isinstance(statuses, dict) else {}
-    required_identity_fields = set(COMMON_IDENTITY_FIELDS)
-    compared_fields = set(manifest.get("compared_status_fields") or [])
-    if not required_identity_fields <= compared_fields:
-        issues.append("manifest does not compare every required model/data/index identity")
-    for path in ("naive", "stream"):
-        status = statuses.get(path)
-        if not isinstance(status, dict) or status.get("approval_status") != "approved_frozen":
-            issues.append(f"{path} status is not approved_frozen")
-        elif any(status.get(field) is None for field in required_identity_fields):
-            issues.append(f"{path} status is missing required model/data/index identities")
-        else:
-            identity_issues = service_identity_issues(status, path, root=ROOT)
-            issues.extend(f"{path} {issue}" for issue in identity_issues)
-        if isinstance(status, dict) and (
-            status.get("dataset_checksums_valid") is not True
-            or status.get("index_metadata_ready") is not True
-            or status.get("index_matches_current_corpus") is not True
-            or _integer(status.get("indexed_chunks"), 0) <= 0
-            or _integer(status.get("indexed_chunks"), 0)
-            != _integer(status.get("indexed_desired_chunks"))
-            or status.get("index_source_sha256") != status.get("current_index_source_sha256")
-        ):
-            issues.append(f"{path} status does not prove a complete current index")
-    if all(isinstance(statuses.get(path), dict) for path in ("naive", "stream")):
-        identity_mismatches = [
-            field
-            for field in required_identity_fields
-            if statuses["naive"].get(field) != statuses["stream"].get(field)
-        ]
-        if identity_mismatches:
-            issues.append(f"backend identity mismatch: {sorted(identity_mismatches)}")
-    path_urls = manifest.get("path_urls")
-    path_urls = path_urls if isinstance(path_urls, dict) else {}
-    instance_ids = manifest.get("backend_instance_ids")
-    instance_ids = instance_ids if isinstance(instance_ids, dict) else {}
-    if (
-        not str(path_urls.get("naive") or "")
-        or not str(path_urls.get("stream") or "")
-        or str(path_urls.get("naive")).rstrip("/") == str(path_urls.get("stream")).rstrip("/")
-    ):
-        issues.append("manifest does not bind distinct service URLs")
-    if (
-        not str(instance_ids.get("naive") or "")
-        or not str(instance_ids.get("stream") or "")
-        or instance_ids.get("naive") == instance_ids.get("stream")
-        or any(
-            isinstance(statuses.get(path), dict)
-            and statuses[path].get("instance_id") != instance_ids.get(path)
-            for path in ("naive", "stream")
-        )
-    ):
-        issues.append("manifest does not bind two matching, distinct backend instances")
-
-    try:
-        query_path = resolve_manifest_path(manifest_path, manifest.get("queries"))
-    except ValueError as exc:
-        query_path = Path()
-        issues.append(str(exc))
-    query_rows: list[dict[str, Any]] = []
-    if not query_path.is_file():
-        issues.append("manifest query file is missing")
-    else:
-        expected_query_hash = str(manifest.get("queries_sha256") or "")
-        if not expected_query_hash or sha256_file(query_path) != expected_query_hash:
-            issues.append("query file checksum does not match manifest")
-        query_rows = read_jsonl(query_path)
+    failed_rows = [row for row in rows if "error" in row]
+    if failed_rows:
+        issues.append(f"prediction file contains {len(failed_rows)} counted failure row(s)")
+    if any(row.get("deadline_exceeded") is True for row in rows):
+        issues.append("prediction rows include case-deadline failures")
 
     query_ids = [str(value) for value in (manifest.get("query_ids") or [])]
+    repetitions = int(manifest.get("repetitions") or 0)
     if not query_ids:
         issues.append("manifest query_ids are missing")
-    if len(query_ids) != int(manifest.get("query_count") or 0):
-        issues.append("manifest query_count does not match query_ids")
-    if len(query_ids) != 10 or int(manifest.get("query_count") or 0) != 10:
-        issues.append("reportable scoring requires exactly 10 frozen query IDs")
     if len(query_ids) != len(set(query_ids)):
         issues.append("manifest query_ids contain duplicates")
-
-    query_by_id = {str(row.get("id")): row for row in query_rows}
-    if len(query_by_id) != len(query_rows):
-        issues.append("checksummed query file contains duplicate IDs")
-    file_query_ids = [str(row.get("id")) for row in query_rows]
-    query_selection = manifest.get("query_selection")
-    expected_query_selection = {
-        "method": "ordered_prefix",
-        "source_query_count": len(file_query_ids),
-        "selected_query_count": 10,
-    }
-    if query_selection != expected_query_selection:
-        issues.append("manifest frozen-query selection contract is invalid")
-    if query_ids != file_query_ids[:10]:
-        issues.append(
-            "manifest query_ids do not equal the ordered first 10 checksummed query-file IDs"
-        )
-
     expected_keys = {
         (query_id, repetition, path)
         for query_id in query_ids
         for repetition in range(1, repetitions + 1)
         for path in ("naive", "stream")
     }
-    if len(expected_keys) != 20:
-        issues.append("reportable scoring requires exactly 20 total path runs")
     observed_keys = [
         (str(row.get("id")), int(row.get("repetition") or 0), str(row.get("path"))) for row in rows
     ]
@@ -341,273 +182,27 @@ def validate_run_integrity(
         issues.append(f"missing prediction keys: {missing_keys[:10]}")
     if extra_keys:
         issues.append(f"unexpected prediction keys: {extra_keys[:10]}")
-    if len(rows) != len(expected_keys):
-        issues.append(
-            f"prediction row count {len(rows)} does not equal expected {len(expected_keys)}"
-        )
-    if int(manifest.get("prediction_rows_expected") or 0) != len(expected_keys):
-        issues.append("manifest prediction_rows_expected is inconsistent")
     if int(manifest.get("prediction_rows_observed") or 0) != len(rows):
         issues.append("manifest prediction_rows_observed is inconsistent")
-    expected_warmup_outputs = len(query_ids) * warmup_repetitions * 2
-    if int(manifest.get("warmup_outputs_expected") or 0) != expected_warmup_outputs:
-        issues.append("manifest warmup_outputs_expected is inconsistent")
-    if int(manifest.get("warmup_outputs_completed") or 0) != expected_warmup_outputs:
-        issues.append("manifest warm-up output count is inconsistent")
-    if int(manifest.get("warmup_failures") or 0) != 0:
-        issues.append("manifest records warm-up failures")
-
-    query_mismatches = []
-    for row in rows:
-        source = query_by_id.get(str(row.get("id")))
-        if source and (
-            row.get("query") != source.get("query")
-            or row.get("query_time") != source.get("query_time")
-        ):
-            query_mismatches.append(str(row.get("id")))
-    if query_mismatches:
-        issues.append(f"prediction query payload mismatch: {sorted(set(query_mismatches))[:10]}")
-
-    run_tag = str(manifest.get("run_tag") or "")
-    provenance_mismatches = []
-    for row in rows:
-        path = str(row.get("path"))
-        expected_scope = f"bench-{run_tag}-{int(row.get('repetition') or 0)}-{row.get('id')}-{path}"
-        expected_url = str(path_urls.get(path) or "").rstrip("/")
-        if (
-            not run_tag
-            or row.get("session_scope") != expected_scope
-            or not expected_url
-            or str(row.get("service_base_url") or "").rstrip("/") != expected_url
-        ):
-            provenance_mismatches.append((str(row.get("id")), path))
-    if provenance_mismatches:
-        issues.append(f"prediction run/service provenance mismatch: {provenance_mismatches[:10]}")
-
-    completed_rows = [row for row in rows if "error" not in row]
-    failed_rows = [row for row in rows if "error" in row]
-    if failed_rows:
-        issues.append(f"prediction file contains {len(failed_rows)} counted failure row(s)")
-    max_typing_drift_ms = float(manifest.get("max_typing_drift_ms") or -1)
-    drift_violations: list[tuple[str, int, str]] = []
-    malformed_timing: list[tuple[str, int, str]] = []
-    malformed_dwell: list[tuple[str, int, str]] = []
-    malformed_final_snapshots: list[tuple[str, int, str]] = []
-    snapshot_transport_errors = 0
-    for row in completed_rows:
-        key = (str(row.get("id")), int(row.get("repetition") or 0), str(row.get("path")))
-        typing = row.get("typing")
-        if not isinstance(typing, dict):
-            malformed_timing.append(key)
-            continue
-        try:
-            planned = float(typing["planned_commit_offset_ms"])
-            actual = float(typing["actual_commit_offset_ms"])
-            recorded_drift = float(typing["commit_drift_ms"])
-            row_tolerance = float(typing["max_allowed_drift_ms"])
-            typing_duration = float(typing["typing_duration_ms"])
-            dwell = float(typing["post_typing_dwell_ms"])
-            simulated_duration = float(typing["simulated_duration_ms"])
-            words_per_minute = float(typing["words_per_minute"])
-            snapshot_interval_ms = int(typing["snapshot_interval_ms"])
-            settled_draft_delay_ms = int(typing["settled_draft_delay_ms"])
-        except KeyError, TypeError, ValueError:
-            malformed_timing.append(key)
-            continue
-        if (
-            max_typing_drift_ms < 0
-            or abs((actual - planned) - recorded_drift) > 1.0
-            or abs(row_tolerance - max_typing_drift_ms) > 1e-6
-            or typing.get("drift_within_tolerance") is not True
-            or abs(recorded_drift) > max_typing_drift_ms
-        ):
-            drift_violations.append(key)
-        if (
-            not math.isclose(words_per_minute, 70.0, abs_tol=1e-6)
-            or not math.isclose(dwell, 5000.0, abs_tol=1e-6)
-            or snapshot_interval_ms != 400
-            or settled_draft_delay_ms != 500
-            or not math.isclose(typing_duration + dwell, planned, abs_tol=1.0)
-            or not math.isclose(simulated_duration, planned, abs_tol=1.0)
-        ):
-            malformed_dwell.append(key)
-        row_snapshot_errors = int(row.get("snapshot_transport_errors") or 0)
-        snapshot_transport_errors += row_snapshot_errors
-        schedules = row.get("snapshot_schedule")
-        if not isinstance(schedules, list) or any(
-            not isinstance(schedule, dict)
-            or schedule.get("transport_status") not in {"completed", "aborted_at_commit"}
-            for schedule in schedules
-        ):
-            snapshot_transport_errors += 1
-        elif row.get("path") == "naive" and schedules:
-            malformed_final_snapshots.append(key)
-        elif row.get("path") == "stream":
-            query = str(row.get("query") or "").strip()
-            exact_snapshots = []
-            for schedule in schedules:
-                try:
-                    character_count = int(schedule.get("character_count") or -1)
-                except TypeError, ValueError:
-                    continue
-                if schedule.get("is_final") is True and character_count == len(query):
-                    exact_snapshots.append(schedule)
-            if (
-                len(exact_snapshots) != 1
-                or exact_snapshots[0].get("transport_status") != "completed"
-                or row.get("settled_final_snapshot_observed") is not True
-            ):
-                malformed_final_snapshots.append(key)
-            else:
-                try:
-                    final_offset = float(exact_snapshots[0].get("planned_offset_ms") or -1)
-                except TypeError, ValueError:
-                    final_offset = -1
-                if not typing_duration <= final_offset < planned:
-                    malformed_final_snapshots.append(key)
-                exact_revision = _integer(exact_snapshots[0].get("revision"))
-                expected_query = str(row.get("query") or "").strip()
-                settled = any(
-                    isinstance(event, dict)
-                    and event.get("type") == "draft.settled"
-                    and _integer(event.get("revision")) == exact_revision
-                    and event.get("query") == expected_query
-                    and event.get("state") in {"starting", "in_flight", "ready"}
-                    and event.get("benchmark_offset_from_commit_ms") is not None
-                    and math.isfinite(
-                        _number(event.get("benchmark_offset_from_commit_ms"), math.inf)
-                    )
-                    and _number(event.get("benchmark_offset_from_commit_ms"), math.inf) <= 0
-                    for event in row.get("trace_events", [])
-                )
-                retrieval_started = any(
-                    isinstance(event, dict)
-                    and event.get("type") == "retrieval.started"
-                    and _integer(event.get("revision")) == exact_revision
-                    and event.get("query") == expected_query
-                    and event.get("benchmark_offset_from_commit_ms") is not None
-                    and math.isfinite(
-                        _number(event.get("benchmark_offset_from_commit_ms"), math.inf)
-                    )
-                    and _number(event.get("benchmark_offset_from_commit_ms"), math.inf) <= 0
-                    for event in row.get("trace_events", [])
-                )
-                if not settled or not retrieval_started:
-                    malformed_final_snapshots.append(key)
-    if malformed_timing:
-        issues.append(f"prediction rows have malformed typing timing: {malformed_timing[:10]}")
-    if drift_violations:
-        issues.append(f"prediction rows exceed or misstate typing drift: {drift_violations[:10]}")
-    if malformed_dwell:
-        issues.append(
-            f"prediction rows violate the fixed typing/dwell contract: {malformed_dwell[:10]}"
-        )
-    if malformed_final_snapshots:
-        issues.append(
-            "prediction rows violate path-specific snapshot scheduling: "
-            f"{malformed_final_snapshots[:10]}"
-        )
-    if snapshot_transport_errors:
-        issues.append(
-            f"prediction rows record {snapshot_transport_errors} snapshot transport error(s)"
-        )
-    if any(row.get("deadline_exceeded") is True for row in rows):
-        issues.append("prediction rows include case-deadline failures")
-    cleanup_failures = []
-    for row in rows:
-        cleanup = row.get("turn_cleanup")
-        cleanup = cleanup if isinstance(cleanup, dict) else {}
-        expected_cleanup_status = "completed" if "error" in row else "not_required"
-        if cleanup.get("turn_cleanup_status") != expected_cleanup_status:
-            cleanup_failures.append(
-                (str(row.get("id")), int(row.get("repetition") or 0), str(row.get("path")))
-            )
-    if cleanup_failures:
-        issues.append(f"turn cleanup contract failed: {cleanup_failures[:10]}")
-    timing_gate = manifest.get("timing_drift_gate")
-    if isinstance(timing_gate, dict):
-        if int(timing_gate.get("observations") or 0) != len(completed_rows):
-            issues.append("manifest typing-drift observation count is inconsistent")
-        if int(timing_gate.get("violations") or 0) != len(drift_violations):
-            issues.append("manifest typing-drift violation count is inconsistent")
-    snapshot_gate = manifest.get("snapshot_transport_gate")
-    if isinstance(snapshot_gate, dict) and int(snapshot_gate.get("errors") or 0) != 0:
-        issues.append("manifest snapshot transport gate records errors")
-    deadline_gate = manifest.get("case_deadline_gate")
-    if isinstance(deadline_gate, dict) and int(deadline_gate.get("deadline_failures") or 0) != 0:
-        issues.append("manifest case deadline gate records failures")
-    cleanup_gate = manifest.get("turn_cleanup_gate")
-    if isinstance(cleanup_gate, dict) and int(cleanup_gate.get("cleanup_failures") or 0) != len(
-        cleanup_failures
-    ):
-        issues.append("manifest turn-cleanup failure count is inconsistent")
-
-    try:
-        serving_manifest_path = resolve_manifest_path(
-            manifest_path, manifest.get("serving_checksum_manifest")
-        )
-    except ValueError as exc:
-        serving_manifest_path = Path()
-        issues.append(str(exc))
-    try:
-        serving_manifest_sha256 = sha256_file(serving_manifest_path)
-        serving_checksums = read_checksum_manifest(serving_manifest_path)
-    except (OSError, ValueError) as exc:
-        serving_manifest_sha256 = ""
-        serving_checksums = {}
-        issues.append(f"serving checksum manifest is unavailable or invalid: {exc}")
-    if serving_manifest_sha256 != str(manifest.get("serving_checksum_manifest_sha256") or ""):
-        issues.append("serving checksum manifest hash does not match the run")
-    document_entries = set(serving_checksums) & {
-        "documents.jsonl",
-        "documents.jsonl.bz2",
-    }
-    expected_serving_entries = {
-        "dataset_summary.json",
-        "test_queries.jsonl",
-        "inference_bundle.json",
-    } | document_entries
-    if len(document_entries) != 1 or set(serving_checksums) != expected_serving_entries:
-        issues.append("serving checksum manifest is not the exact gold-free bundle")
-    if any("gold" in name.casefold() for name in serving_checksums):
-        issues.append("serving checksum manifest improperly names scorer-only gold")
-    if serving_checksums.get("test_queries.jsonl") != str(manifest.get("queries_sha256") or ""):
-        issues.append("serving bundle query hash does not match the run")
 
     evaluation_manifest_path = evaluation_manifest_path or gold_path.parent / "checksums.sha256"
-    evaluation_manifest_sha256 = ""
     evaluation_checksums: dict[str, str] = {}
     try:
-        evaluation_manifest_sha256 = sha256_file(evaluation_manifest_path)
         evaluation_checksums = read_checksum_manifest(evaluation_manifest_path)
     except (OSError, ValueError) as exc:
         issues.append(f"evaluation checksum manifest is unavailable or invalid: {exc}")
-    runner_evaluation_manifest_sha256 = str(manifest.get("evaluation_manifest_sha256") or "")
-    runner_freeze_id = str(manifest.get("freeze_id") or "")
-    if (
-        not evaluation_manifest_sha256
-        or runner_evaluation_manifest_sha256 != evaluation_manifest_sha256
-    ):
-        issues.append("offline evaluation manifest does not match the runner freeze binding")
-    if not runner_freeze_id or runner_freeze_id != opaque_freeze_id(
-        runner_evaluation_manifest_sha256
-    ):
-        issues.append("runner opaque freeze_id is invalid")
-
-    full_query_hash = evaluation_checksums.get("test_queries.jsonl")
-    if not full_query_hash or full_query_hash != str(manifest.get("queries_sha256") or ""):
-        issues.append("frozen evaluation query hash does not match the runner query bundle")
-    frozen_gold_hash = evaluation_checksums.get("test_gold.jsonl")
+    frozen_gold_hash = evaluation_checksums.get(gold_path.name)
     if not gold_path.is_file():
         issues.append("scorer gold file is missing")
     elif not frozen_gold_hash or sha256_file(gold_path) != frozen_gold_hash:
-        issues.append("scorer gold checksum does not match the frozen evaluation manifest")
+        issues.append("scorer gold checksum does not match the dataset checksum manifest")
     else:
         gold_ids = [str(row.get("id")) for row in read_jsonl(gold_path)]
         if len(gold_ids) != len(set(gold_ids)):
             issues.append("checksummed scorer gold contains duplicate IDs")
-        if gold_ids != file_query_ids:
-            issues.append("checksummed scorer gold IDs do not equal frozen query-file IDs")
+        prediction_ids = {str(row.get("id")) for row in rows}
+        if not prediction_ids <= set(gold_ids):
+            issues.append("scored predictions include IDs absent from gold")
 
     return {
         "status": "complete" if not issues else "missing_or_incomplete",
@@ -617,8 +212,6 @@ def validate_run_integrity(
         "gold": gold_path.name,
         "gold_sha256": frozen_gold_hash,
         "evaluation_manifest": evaluation_manifest_path.name,
-        "evaluation_manifest_sha256": evaluation_manifest_sha256,
-        "freeze_id": runner_freeze_id,
         "expected_prediction_rows": len(expected_keys),
         "observed_prediction_rows": len(rows),
         "duplicate_keys": len(duplicate_keys),

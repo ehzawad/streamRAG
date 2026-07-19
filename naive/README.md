@@ -29,7 +29,3 @@ before the dataset review is complete. Use the separate `frontend/` for chat.
 Naive RAG reports the common answer, citation, latency, reliability, usage,
 retrieval, accounting, and observed-cost metrics. It does not emit StreamRAG
 scheduling diagnostics.
-
-```bash
-uv run pytest -q shared/tests naive/tests
-```

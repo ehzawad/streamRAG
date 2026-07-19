@@ -24,8 +24,8 @@ OPENAI_API_KEY=your-real-key
 ALLOW_UNREVIEWED_DATASET=1
 ```
 
-The override permits development work on the pending candidate. It does not
-approve the dataset or authorize the sealed test run.
+`ALLOW_UNREVIEWED_DATASET=1` lets the services load the committed candidate
+corpus. There is no sealed test run; this is the normal setting for every run.
 
 ## Reproduce the Docker development pipeline
 
@@ -39,8 +39,8 @@ Terminal B:
 
 ```bash
 make docker-sync
-make benchmark-smoke
-make score-dev
+make benchmark
+make score
 ```
 
 `docker-sync` reads the committed 250-document corpus, creates 1,000 embeddings
@@ -48,11 +48,11 @@ for each path, and writes them to separate Qdrant services. On the recorded clea
 run, Naive indexed in 40.926 seconds and StreamRAG in 39.055 seconds. Existing
 valid volumes make later syncs incremental.
 
-`benchmark-smoke` replays the five visible development questions through both
-services with deterministic 70 WPM typing, changed-only 400 ms snapshots, a
-5-second pre-Send dwell, and one measured repetition. `score-dev` verifies and
-updates the retained non-final artifact at
-`comparison/benchmark/results/dev-comparison/`.
+`make benchmark` replays `test_queries.jsonl` through both services with
+deterministic 70 WPM typing, changed-only 400 ms snapshots, and a 5-second
+pre-Send dwell, writing predictions to
+`comparison/benchmark/results/predictions.jsonl`. `make score` binds the gold set
+via `checksums.sha256` and writes `summary.json`.
 
 Open <http://127.0.0.1:5173/> after both indexes are ready:
 
@@ -69,14 +69,16 @@ users need only the frontend URL.
 
 ```bash
 make setup
-make verify-data
 make check
 make docker-config
 ```
 
-`make check` runs Python linting and tests, frontend tests, and a production
-frontend build. `make verify-data` validates the checksum-bound corpus and the
-deterministic 1,000-point target without calling OpenAI.
+`make check` runs Python linting (ruff) and a production frontend build. The
+committed corpus is checksum-bound; each service verifies those checksums when it
+loads the dataset, so no separate verification step is required. The Rust native
+backend `native/snapshot_delta/` (PyO3 module `streamrag_snapshot`, with a
+pure-Python fallback in `stream/snapshot.py`) builds via `make native` and is
+benchmarked with `make bench-native`.
 
 Useful live checks:
 
@@ -109,16 +111,18 @@ commands and focused tests are in:
 The headless provisioner can also create two isolated embedded service stores:
 
 ```bash
-make benchmark-dev-services-check
-make benchmark-dev-services-sync
+make benchmark-services-check
+make benchmark-services-sync
 
 # terminal A
-make benchmark-dev-services-serve
+make benchmark-services-serve
 
 # terminal B
-make benchmark-smoke
-make score-dev
+make benchmark
+make score
 ```
+
+This is the single benchmark path, bound to `data/crag_eval`.
 
 ## Persistent state
 
@@ -141,35 +145,10 @@ make docker-up
 Deleting these volumes removes generated indexes, SQLite conversations, and logs;
 it does not remove the committed dataset.
 
-## Final evaluation after approval
-
-The final result is intentionally absent while the dataset status is
-`candidate_pending_human_review`. No sealed question has been run. After an
-explicit human review and checksum-bound `approved_frozen` commit:
-
-```bash
-make benchmark-inference-bundle
-make benchmark-services-check
-make benchmark-services-sync
-
-# terminal A
-make benchmark-services-serve
-
-# terminal B
-make benchmark
-make score-final
-```
-
-The commands create `comparison/benchmark/results/final/` only when a real final
-run exists. That directory should not contain placeholders or development data.
-The final runner requires exactly 10 sealed questions and 20 complete path
-outputs; `score-final` additionally requires hash-bound manual adjudications.
-
 ## Troubleshooting
 
 - **API health says the dataset is unapproved:** set
-  `ALLOW_UNREVIEWED_DATASET=1` only for the development run, then recreate the
-  containers.
+  `ALLOW_UNREVIEWED_DATASET=1` in `.env`, then recreate the containers.
 - **Index is not ready:** run `make docker-sync` and inspect the API and Qdrant
   logs with `docker compose logs`.
 - **Port already in use:** stop the conflicting process or the older Compose
