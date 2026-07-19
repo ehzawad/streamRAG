@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import sqlite3
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -314,3 +316,123 @@ def test_status_validation_rejects_partial_or_stale_index() -> None:
     status["indexed_desired_chunks"] = 11
     with pytest.raises(RuntimeError, match="desired chunks"):
         validate_status(status, "fixture", require_index=True)
+
+
+def test_service_process_launch_readiness_and_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instance = Instance("naive", 18001, tmp_path / "naive")
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    launched: dict[str, object] = {}
+
+    class Process:
+        terminated = False
+        killed = False
+        wait_timeouts: list[float] = []
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, *, timeout: float) -> int:
+            self.wait_timeouts.append(timeout)
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = Process()
+
+    def popen(command, **kwargs):
+        launched["command"] = command
+        launched.update(kwargs)
+        return process
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, bool]:
+            return {"ok": True}
+
+    status_request: dict[str, object] = {}
+
+    def get(url: str, *, timeout: float) -> Response:
+        status_request.update(url=url, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr(benchmark_services.subprocess, "Popen", popen)
+    monkeypatch.setattr(benchmark_services.httpx, "get", get)
+
+    service = benchmark_services.start_service(
+        dataset_dir,
+        instance,
+        allow_unreviewed_dataset=True,
+    )
+    status = benchmark_services.wait_for_status(service, timeout_s=1)
+
+    assert launched["command"] == [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "naive.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "18001",
+    ]
+    assert launched["cwd"] == benchmark_services.ROOT
+    environment = launched["env"]
+    assert isinstance(environment, dict)
+    assert environment["ALLOW_UNREVIEWED_DATASET"] == "1"
+    assert environment["DATASET_DIR"] == str(dataset_dir)
+    assert launched["stdout"] is service.log_handle
+    assert launched["stderr"] == subprocess.STDOUT
+    assert status_request == {"url": f"{instance.base_url}/v1/data/status", "timeout": 2}
+    assert status == {"ok": True}
+
+    benchmark_services.stop_service(service)
+
+    assert process.terminated is True
+    assert process.killed is False
+    assert process.wait_timeouts == [10]
+    assert service.log_handle.closed is True
+
+
+def test_service_shutdown_kills_a_process_that_ignores_terminate(tmp_path: Path) -> None:
+    class Process:
+        killed = False
+        wait_timeouts: list[float] = []
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, *, timeout: float) -> int:
+            self.wait_timeouts.append(timeout)
+            if timeout == 10:
+                raise subprocess.TimeoutExpired("uvicorn", timeout)
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = Process()
+    log_handle = io.BytesIO()
+    service = benchmark_services.ServiceProcess(
+        Instance("stream", 18002, tmp_path / "stream"),
+        process,
+        log_handle,
+    )
+
+    benchmark_services.stop_service(service)
+
+    assert process.wait_timeouts == [10, 5]
+    assert process.killed is True
+    assert log_handle.closed is True

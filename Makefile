@@ -1,6 +1,8 @@
 NAIVE_BASE_URL ?= http://localhost:8001
 STREAM_BASE_URL ?= http://localhost:8002
 SMOKE_EVALUATION_DIR ?= data/crag_eval
+CRAG_SOURCE ?= data/raw/crag_official/crag_task_1_and_2_dev_v5.jsonl.bz2
+REBUILT_DATASET_DIR ?= var/rebuilt-crag-eval
 APP_STATE_ROOT ?= var/dev-services
 BENCH_DEV_STATE_ROOT ?= comparison/benchmark/results/dev-services
 BENCH_EVALUATION_DIR ?= data/crag_eval
@@ -19,8 +21,7 @@ DEV_SUMMARY ?= comparison/benchmark/results/dev-comparison/summary.json
 
 .PHONY: setup setup-python setup-frontend dev-naive dev-stream dev-frontend \
 	check check-shared check-naive check-stream check-comparison \
-	check-frontend build verify-data crag-source sync-naive sync-stream \
-	sync-app \
+	check-frontend build verify-data crag-source rebuild-dataset sync-naive sync-stream \
 	benchmark-inference-bundle benchmark-services-check benchmark-services-sync \
 	benchmark-services-serve benchmark-dev-services-check benchmark-dev-services-sync \
 	benchmark-dev-services-serve benchmark-smoke score-dev benchmark score score-final \
@@ -85,15 +86,18 @@ verify-data:
 	uv run python -m scripts.verify_dataset
 
 crag-source:
-	uv run python -m scripts.download_crag_source
+	uv run python -m scripts.download_crag_source --output $(CRAG_SOURCE)
+
+rebuild-dataset: crag-source
+	uv run python -m scripts.prepare_crag_text_global \
+		--source $(CRAG_SOURCE) --output-dir $(REBUILT_DATASET_DIR)
+	uv run python -m scripts.verify_dataset --dataset-dir $(REBUILT_DATASET_DIR)
 
 sync-naive:
 	curl --fail --show-error --request POST $(NAIVE_BASE_URL)/v1/data/sync
 
 sync-stream:
 	curl --fail --show-error --request POST $(STREAM_BASE_URL)/v1/data/sync
-
-sync-app: sync-naive sync-stream
 
 benchmark-inference-bundle:
 	uv run python -m comparison.prepare_inference_bundle \
