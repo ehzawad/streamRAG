@@ -141,11 +141,10 @@ def test_docker_stack_isolates_persistent_state() -> None:
     assert "networks:\n      - edge" in frontend
 
 
-def test_app_stack_does_not_depend_on_comparison_state() -> None:
-    script = (ROOT / "scripts" / "dev_stack.sh").read_text(encoding="utf-8")
+def test_docker_app_stack_does_not_depend_on_comparison_package() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
-    assert "APP_STATE_ROOT" in script
-    assert "comparison/" not in script
+    assert "comparison" not in compose
 
 
 def run_with_blocked_imports(blocked: set[str], source: str) -> subprocess.CompletedProcess[str]:

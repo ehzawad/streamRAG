@@ -18,7 +18,7 @@ DEV_PREDICTIONS ?= comparison/benchmark/results/dev-comparison/predictions.jsonl
 DEV_SUMMARY ?= comparison/benchmark/results/dev-comparison/summary.json
 
 .PHONY: setup setup-python setup-frontend dev-naive dev-stream dev-frontend \
-	dev-stack check check-shared check-naive check-stream check-comparison \
+	check check-shared check-naive check-stream check-comparison \
 	check-frontend build verify-data crag-source sync-naive sync-stream \
 	sync-app \
 	benchmark-inference-bundle benchmark-services-check benchmark-services-sync \
@@ -50,9 +50,6 @@ dev-stream:
 
 dev-frontend:
 	cd frontend && npm run dev -- --host 127.0.0.1
-
-dev-stack:
-	APP_STATE_ROOT="$(APP_STATE_ROOT)" ./scripts/dev_stack.sh
 
 check-shared:
 	uv run ruff check shared scripts
