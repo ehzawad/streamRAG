@@ -1,16 +1,12 @@
-# Typed StreamRAG
+# StreamRAG
 
-`stream/` prepares evidence while the user types but answers only after Send.
+`stream/` is the typed-input path. It can prepare evidence before Send, but it
+never generates an answer from an uncommitted draft. Prepared evidence is reused
+only when its draft exactly matches the committed question; otherwise the path
+retrieves again from the committed text.
 
-Changed drafts pass through a bounded low-reasoning trigger. Retrieval may begin
-after the latest delivered draft has been unchanged for 500 ms. At Send,
-prepared evidence is reusable only when that draft exactly matches the committed
-text. Mismatch, failure, or stale work takes the same committed-text fallback as
-Naive. This is the main correctness boundary.
-
-The app uses `shared/` for common data, answer, API, memory, metric, and UI
-behavior. It never imports `naive/`, `frontend/`, or `comparison/` and runs
-without them.
+The service uses `shared/` but does not import `naive/`, `frontend/`, or
+`comparison/`. It remains runnable when those directories are absent.
 
 ## Run
 
@@ -22,17 +18,18 @@ METRICS_LOG=./var/stream/requests.jsonl \
 uv run uvicorn stream.api:app --host 127.0.0.1 --port 8002
 ```
 
-For fresh state, build the real local index once:
+Build the local index once for fresh state:
 
 ```bash
 curl --fail --request POST http://127.0.0.1:8002/v1/data/sync
 ```
 
-Open <http://127.0.0.1:8002>; its schema is at
-<http://127.0.0.1:8002/docs>. `ALLOW_UNREVIEWED_DATASET` is development-only.
+Open <http://127.0.0.1:8002>; the API schema is at
+<http://127.0.0.1:8002/docs>. `ALLOW_UNREVIEWED_DATASET=1` is for development
+before the dataset review is complete.
 
-Stream reports the shared metrics plus controller, speculation, evidence lead
-and reuse, stale-work, cancellation, and fallback diagnostics.
+StreamRAG reports the common comparison metrics plus speculation, evidence
+lead/reuse, stale-work, cancellation, and fallback diagnostics.
 
 ```bash
 uv run pytest -q shared/tests stream/tests

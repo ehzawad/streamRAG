@@ -42,8 +42,8 @@ def build_test_app(
 ):
     return api_factory.create_app(
         implementation=implementation,
-        api_title=f"{implementation.title()} RAG Assessment API",
-        page_title="Typed StreamRAG",
+        api_title="StreamRAG API" if implementation == "stream" else "Naive RAG API",
+        page_title="StreamRAG",
         page_subtitle="Test service presentation.",
         settings_provider=lambda: settings,
         path_factory=lambda _settings, _store: StubPath(
@@ -69,7 +69,7 @@ def test_health_and_dataset_gate(tmp_path: Path) -> None:
         page = client.get("/")
         assert page.status_code == 200
         assert page.headers["content-type"].startswith("text/html")
-        assert "Typed StreamRAG" in page.text
+        assert "StreamRAG" in page.text
         assert '"implementation":"stream"' in page.text
         assert '"supportsSnapshots":true' in page.text
         assert 'snapshotQueue = { active: false, controller: null, latest: "" }' in page.text

@@ -1,141 +1,100 @@
-# Typed StreamRAG assessment
+# StreamRAG
 
-A working full-stack comparison of Naive RAG and Typed StreamRAG. Naive waits
-for Send; Stream uses the typing window to prepare evidence and still answers
-only after Send.
+A full-stack comparison of Naive RAG and StreamRAG for typed input. Naive waits
+for **Send** before retrieval. StreamRAG can prepare evidence while the user is
+typing, but it never generates or displays an answer before **Send**.
 
-It adapts the StreamRAG scheduling idea to typed input; speech and a trained
-trigger are out of scope.
+Both paths use the same local CRAG corpus, chunking, embeddings, search policy,
+answer agent, memory, and scorer. Their runtime state and implementations remain
+isolated.
 
-## Fixed data and current result
+## Experiences
 
-- **Knowledge base:** 250 complete CRAG-derived documents, deterministically
-  split into exactly 1,000 chunks/local Qdrant points.
-- **Retrieval:** `text-embedding-3-large` at 3,072 dimensions. Compose runs two
-  isolated local Qdrant servers; neither needs an external account or API key.
-- **Evaluation:** The complete bundle is committed at
-  [`data/crag_eval`](data/crag_eval): 5 development questions, 10 sealed test
-  questions, the corpus, gold, checksums, and review metadata.
-- **Gate:** status is `candidate_pending_human_review`. Development checks are
-  allowed; the sealed test set cannot run until a reviewer approves and freezes
-  the dataset and its checksums.
+| Route | Purpose |
+|---|---|
+| `/naive` | Run the conventional post-Send baseline |
+| `/stream` | Run StreamRAG with pre-Send evidence preparation |
+| `/compare` | Send the same committed text to both isolated services |
 
-The latest real-API development smoke run had equal 100% automatic answer and
-citation proxies. Stream won first-token latency on 5/5 questions, with a median
-1,024.466 ms (44.226%) improvement. This is directional development evidence,
-not a final benchmark: the sample is small, no answers were human-adjudicated,
-and the sealed test set remains untouched. See
-[`docs/BENCHMARK_REPORT.md`](docs/BENCHMARK_REPORT.md).
+All routes support multi-turn conversations. Compare keeps separate Naive and
+StreamRAG sessions so neither path can use the other's history or cache.
 
-## One homepage, three experiences
+## Quick start
 
-| Experience | URL | Backend dependency |
-| --- | --- | --- |
-| Homepage | <http://127.0.0.1:5173/> | route launcher |
-| Naive only | <http://127.0.0.1:5173/naive> | `naive/` + `shared/` |
-| Stream only | <http://127.0.0.1:5173/stream> | `stream/` + `shared/` |
-| Side-by-side | <http://127.0.0.1:5173/compare> | both isolated APIs |
-
-`naive/` and `stream/` are independently runnable products. Neither imports or
-calls the other. Their direct developer UIs remain available on ports 8001 and
-8002. `frontend/` is only the GUI; its same-origin proxy keeps those ports out of
-the public browser contract.
-`comparison/` is a separate headless CLI for provisioning, replay, scoring, and
-reports. Removing either consumer does not affect the APIs or the other consumer.
-`shared/` holds only the corpus/index, answer, memory, API lifecycle, single-path
-UI shell, and metric contracts that must be common for a fair test.
-
-All three routed experiences are multi-turn chats. A follow-up keeps the prior
-turns in that path's isolated session; **New chat** clears the transcript and
-starts a new session. Compare preserves separate Naive and Stream histories so
-neither implementation can borrow the other's state.
-
-## Run the complete comparison
+Requirements: Docker, `make`, and a real OpenAI API key.
 
 ```bash
 cp .env.example .env
-# Set a real OPENAI_API_KEY in .env.
-make setup
-make verify-data
-make dev-stack
-```
-
-In another terminal, run `make sync-app` once, then open the homepage at
-<http://127.0.0.1:5173/>. Each standalone API builds and owns its own embedded
-Qdrant, SQLite, metrics, session, and cache state under `var/`. Live indexing
-and answers use OpenAI and local vector search; no live-path dependency is
-mocked. The faster stopped-seed cloning workflow belongs only to the headless
-benchmark.
-
-Exact standalone commands are in [`naive/README.md`](naive/README.md) and
-[`stream/README.md`](stream/README.md). Component contracts are in
-[`shared/README.md`](shared/README.md) and
-[`comparison/README.md`](comparison/README.md); GUI commands are in
-[`frontend/README.md`](frontend/README.md).
-
-## Correctness boundary
-
-Stream receives changed drafts and may retrieve after the latest delivered draft
-has been unchanged for 500 ms. Draft evidence stays private. At Send, Stream can
-reuse it only when the recorded draft exactly matches the committed text;
-otherwise it performs the same committed-text retrieval as Naive. Both paths use
-the same answer model, prompt, corpus, chunker, embeddings, search policy, memory,
-and scorer.
-
-## Run the development benchmark
-
-```bash
-make verify-data
-make benchmark-dev-services-check
-make benchmark-dev-services-sync
+# Set OPENAI_API_KEY and ALLOW_UNREVIEWED_DATASET=1 in .env.
 
 # terminal A
-make benchmark-dev-services-serve
+make docker-up
 
-# terminal B
-make benchmark-smoke
-make score-dev
+# terminal B, once for fresh volumes
+make docker-sync
 ```
 
-The smoke run uses only the 5 development questions and is never a final
-reportable result. Stream-only trigger, speculation, reuse, cancellation, and
-fallback details are reported separately from metrics shared with Naive.
+Open <http://127.0.0.1:5173/>. Qdrant runs as two private Docker services with
+separate persistent volumes. SQLite is embedded in each API container and stored
+in its own persistent volume; no SQLite server or host installation is required.
 
-## Verify and operate safely
+## Data and current evidence
+
+- Corpus: 250 complete CRAG-derived documents committed as
+  [`data/crag_eval/documents.jsonl.bz2`](data/crag_eval/documents.jsonl.bz2).
+- Index: 400-token chunks with 50-token overlap, producing exactly 1,000 Qdrant
+  points per path with `text-embedding-3-large`.
+- Evaluation: 5 visible development questions and 10 sealed test questions.
+- Status: `candidate_pending_human_review`; the sealed final benchmark has not
+  been run.
+
+The retained real-API development run completed 10/10 path outputs. Both paths
+scored 5/5 on the automatic answer, support, and citation checks. StreamRAG won
+four of five first-token races, with a median paired reduction of 676.552 ms
+(28.093%). The late-stabilizing case was slower. This is development evidence,
+not a final accuracy claim.
+
+## Structure
+
+| Directory | Ownership |
+|---|---|
+| `naive/` | independently runnable post-Send RAG path |
+| `stream/` | independently runnable StreamRAG path for typed input |
+| `shared/` | only behavior that must be identical across paths |
+| `frontend/` | route hub and browser UI; no benchmark logic |
+| `comparison/` | headless provisioning, replay, scoring, and artifacts |
+| `data/crag_eval/` | committed corpus, questions, gold, checksums, and review sheet |
+
+Removing `frontend/` leaves both APIs and the comparison CLI usable. Removing
+`comparison/` leaves both APIs and the frontend usable. Neither RAG path imports
+or calls the other.
+
+## Documentation
+
+- [Dataset and human review](docs/DATASET.md)
+- [Pipeline and architecture](docs/PIPELINE.md)
+- [Run and reproduce](docs/RUN.md)
+- [Benchmark report](docs/BENCHMARK_REPORT.md)
+
+Component-specific commands remain in the README inside each component folder.
+
+## Verify
 
 ```bash
+make setup
 make verify-data
 make check
 make docker-config
 ```
 
-For the tested local Docker stack, set `OPENAI_API_KEY` and
-`ALLOW_UNREVIEWED_DATASET=1` in `.env`, then run `make docker-up`. From another
-terminal run `make docker-sync` once and open <http://127.0.0.1:5173/>. Stop and
-remove the containers with `make docker-down`; all four named data volumes are
-preserved. Only an intentional `docker compose down --volumes` resets generated
-indexes and SQLite state. The override permits local development on the
-candidate dataset; it does not approve or unseal evaluation data.
-
-The Docker frontend is the only browser-facing origin. It serves `/`, `/naive`,
-`/stream`, and `/compare`, and proxies `/api/naive/*` and `/api/stream/*` to the
-isolated APIs. Each API has its own volume-backed SQLite state and private
-Qdrant server/volume; Qdrant has no host port. A network deployment still needs
-durable backups, TLS, authentication, and rate and spend limits; do not publish
-this no-auth assessment unchanged.
-
-The committed corpus avoids the 705 MiB upstream download. The APIs are async;
-Compose uses asynchronous Qdrant clients, while standalone and headless
-embedded-Qdrant calls run off the event loop. This is a bounded local assessment,
-not a production multi-user service. All host ports bind to loopback and there
-is no authentication, authorization, rate limiting, or tenant isolation. Do not
-expose the stack to a LAN or public interface. See
-[`docs/SECURITY.md`](docs/SECURITY.md) and
-[`docs/REAL_USER_VERIFICATION.md`](docs/REAL_USER_VERIFICATION.md).
+The local stack has no authentication and binds host ports to loopback. Do not
+publish it unchanged: a network deployment needs TLS, identity and authorization,
+rate and spend limits, protected administration, backups, and monitoring.
 
 ## Attribution
 
-The 250-document corpus is derived from Meta's
+The corpus is derived from Meta's
 [CRAG Task 1/2 development release](https://github.com/facebookresearch/CRAG)
-under **CC BY-NC 4.0**; source IDs and URLs are retained for attribution and
-audit. Dependencies remain under the licenses shipped with their distributions.
+under CC BY-NC 4.0. StreamRAG's scheduling idea is adapted to text input; this
+project does not claim to reproduce the paper's speech stack, trained trigger,
+reranker, or scale.

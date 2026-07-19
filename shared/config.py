@@ -78,9 +78,9 @@ class Settings:
 
     def validate(self) -> None:
         if self.openai_model != "gpt-5.6-sol":
-            raise ValueError("the locked assessment model is 'gpt-5.6-sol'")
+            raise ValueError("the locked benchmark model is 'gpt-5.6-sol'")
         if self.embedding_model != "text-embedding-3-large":
-            raise ValueError("the locked assessment embedding model is 'text-embedding-3-large'")
+            raise ValueError("the locked benchmark embedding model is 'text-embedding-3-large'")
         if self.reasoning_effort != "medium":
             raise ValueError(
                 "the locked grounded-answer configuration requires reasoning effort 'medium'"
@@ -92,7 +92,7 @@ class Settings:
                 "the locked text-embedding-3-large configuration requires 3072 dimensions"
             )
         if self.openai_service_tier != "default":
-            raise ValueError("the locked assessment configuration requires service tier 'default'")
+            raise ValueError("the locked benchmark configuration requires service tier 'default'")
         if self.chunk_tokens <= 0:
             raise ValueError("chunk size must be positive")
         if not 0 <= self.chunk_overlap < self.chunk_tokens:
@@ -102,7 +102,7 @@ class Settings:
         if self.openai_embedding_timeout_s <= 0:
             raise ValueError("OPENAI_EMBEDDING_TIMEOUT_S must be positive")
         if self.openai_embedding_max_retries != 0:
-            raise ValueError("the locked assessment disables embedding SDK retries")
+            raise ValueError("the locked benchmark disables embedding SDK retries")
         if (
             min(
                 self.retrieval_timeout_s,

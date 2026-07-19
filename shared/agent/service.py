@@ -224,7 +224,7 @@ class GroundedAgent:
                 model_settings=OpenAIResponsesModelSettings(
                     openai_service_tier=self.settings.openai_service_tier,
                     openai_prompt_cache_key=(
-                        "typed-streamrag-"
+                        "streamrag-"
                         + hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:32]
                     ),
                 ),

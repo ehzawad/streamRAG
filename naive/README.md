@@ -1,12 +1,10 @@
 # Naive RAG
 
-`naive/` is the baseline product. It waits for Send, then retrieves with the
-exact committed text. It has no draft endpoint, trigger model, speculative work,
-or dependency on `stream/`, `frontend/`, or `comparison/`.
+`naive/` is the baseline path. It waits for Send, then retrieves from the exact
+committed question. It has no draft endpoint, trigger, or speculative work.
 
-It uses `shared/` for common data, answer, API, memory, metric, and UI behavior,
-so it remains a complete standalone app when the other product and consumer
-directories are absent.
+The service uses `shared/` but does not import `stream/`, `frontend/`, or
+`comparison/`. It remains runnable when those directories are absent.
 
 ## Run
 
@@ -18,18 +16,19 @@ METRICS_LOG=./var/naive/requests.jsonl \
 uv run uvicorn naive.api:app --host 127.0.0.1 --port 8001
 ```
 
-For fresh state, build the real local index once:
+Build the local index once for fresh state:
 
 ```bash
 curl --fail --request POST http://127.0.0.1:8001/v1/data/sync
 ```
 
-Open <http://127.0.0.1:8001>; its schema is at
-<http://127.0.0.1:8001/docs>. `ALLOW_UNREVIEWED_DATASET` is development-only.
+Open <http://127.0.0.1:8001>; the API schema is at
+<http://127.0.0.1:8001/docs>. `ALLOW_UNREVIEWED_DATASET=1` is for development
+before the dataset review is complete.
 
-Naive reports the shared answer, citation, latency, reliability, usage,
-retrieval, accounting, and observed-cost metrics. It never fabricates
-Stream-only diagnostics.
+Naive RAG reports the common answer, citation, latency, reliability, usage,
+retrieval, accounting, and observed-cost metrics. It does not emit StreamRAG
+scheduling diagnostics.
 
 ```bash
 uv run pytest -q shared/tests naive/tests

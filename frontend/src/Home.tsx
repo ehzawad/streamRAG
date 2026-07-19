@@ -9,7 +9,7 @@ const experiences = [
   },
   {
     path: EXPERIENCE_PATHS.stream,
-    label: "Typed StreamRAG",
+    label: "StreamRAG",
     tag: "Path B",
     description: "Evidence can be prepared while you type; the answer still waits for Send.",
   },
@@ -25,7 +25,7 @@ export function Home() {
   return (
     <main className="home">
       <header className="home-header">
-        <p className="eyebrow">Applied AI Engineer assessment</p>
+        <p className="eyebrow">StreamRAG</p>
         <h1>Choose an experience</h1>
         <p className="subhead">
           One URL exposes three views over the same checksum-bound knowledge base. The Naive and
