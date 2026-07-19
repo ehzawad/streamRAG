@@ -50,9 +50,8 @@ in its own persistent volume; no SQLite server or host installation is required.
 
 The retained real-API development run completed 10/10 path outputs. Both paths
 scored 5/5 on the automatic answer, support, and citation checks. StreamRAG won
-four of five first-token races, with a median paired reduction of 676.552 ms
-(28.093%). The late-stabilizing case was slower. This is development evidence,
-not a final accuracy claim.
+all five first-token races, with a median paired reduction of 967.857 ms
+(41.879%). This is development evidence, not a final accuracy claim.
 
 ## Structure
 

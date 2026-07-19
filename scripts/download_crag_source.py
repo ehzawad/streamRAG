@@ -9,18 +9,10 @@ from pathlib import Path
 
 import httpx
 
-from scripts.crag_source import SOURCE_SHA256, SOURCE_URL
+from scripts.crag_source import SOURCE_SHA256, SOURCE_URL, sha256_file
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "data" / "raw" / "crag_official" / "crag_task_1_and_2_dev_v5.jsonl.bz2"
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def download(output: Path, *, url: str = SOURCE_URL, expected_sha256: str = SOURCE_SHA256) -> str:

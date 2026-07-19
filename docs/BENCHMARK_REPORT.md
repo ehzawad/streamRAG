@@ -30,35 +30,34 @@ Canonical artifact:
 - 5-second pause before Send;
 - real `gpt-5.6-sol` and `text-embedding-3-large` calls;
 - 10/10 completed outputs and complete artifact integrity;
-- 198.291-second measured runner interval.
+- 207.707-second measured runner interval.
 
 | Path | Answer proxy | Support + citation | Median TTFT | Median total | Accounted calls | Retrievals | Observed cost |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Naive | 100% | 100% | 1,900.510 ms | 2,600.577 ms | 5 | 5 | $0.05545131 complete |
-| StreamRAG | 100% | 100% | 1,357.417 ms | 2,088.129 ms | 16 | 14 | at least $0.10134301 |
+| Naive | 100% | 100% | 3,435.527 ms | 3,791.574 ms | 5 | 5 | $0.05536131 complete |
+| StreamRAG | 100% | 100% | 1,531.129 ms | 2,340.075 ms | 18 | 15 | at least $0.10427957 |
 
 Paired results:
 
-- StreamRAG TTFT wins: **4/5**;
-- median TTFT delta: **-676.552 ms (-28.093%)**;
-- paired p95 TTFT delta: **+311.594 ms**;
-- median total-time delta: **-690.521 ms**;
+- StreamRAG TTFT wins: **5/5**;
+- median TTFT delta: **-967.857 ms (-41.879%)**;
+- paired p95 TTFT delta: **-533.341 ms**;
+- median total-time delta: **-647.562 ms**;
 - exact speculative evidence reuse: **5/5**;
-- median evidence lead at Send: **3,610.205 ms**.
+- median evidence lead at Send: **3,637.909 ms**.
 
 The automatic correctness delta was zero because both paths passed all fixed
 answer, support, and citation checks. Human semantic-adjudication coverage was
 0%, so 100% here is not a claim of perfect semantic accuracy.
 
-StreamRAG did more work: 18 controller attempts and 14 retrievals versus Naive's
+StreamRAG did more work: 19 controller attempts and 15 retrievals versus Naive's
 5 retrievals. Cancelled, failed, or timed-out speculative calls do not always
 return provider usage, so StreamRAG's recorded cost is a lower bound and a valid
 paired cost delta is unavailable.
 
-The three early-stabilizing questions and the revision/ambiguity question were
-faster with StreamRAG. The single late-stabilizing question was 488.911 ms slower
-to first token. The aggregate result therefore supports a conditional scheduling
-gain, not a guarantee that speculation helps every query.
+All five questions were faster to first token with StreamRAG in this run,
+including the late-stabilizing case. The result supports a scheduling gain on
+this small development set, not a guarantee that speculation helps every query.
 
 ## Real browser acceptance
 
@@ -125,7 +124,7 @@ The recorded clean Docker run verified:
 - real clean index syncs of 40.926 seconds for Naive and 39.055 seconds for
   StreamRAG, each embedding 366,142 tokens;
 - persistence across container removal and recreation without re-embedding;
-- 209 Python tests, 16 frontend tests, and a production frontend build;
+- the then-current Python and frontend suites and a production frontend build;
 - five healthy containers, matching source/index hashes, zero path failures, and
   no application error or HTTP 4xx/5xx in the final logs.
 

@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -171,3 +172,90 @@ def test_smoke_refuses_unseen_test_queries_before_network(
         asyncio.run(runner.main())
     assert exc_info.value.code == 2
     assert "unseen test queries are refused" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_stream_replay_uses_snapshot_commit_and_sse_transports() -> None:
+    query = "Which city hosted the example event?"
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+    snapshots: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, payload))
+        if request.url.path.endswith("/snapshots"):
+            assert payload is not None
+            snapshots.append(payload)
+            return httpx.Response(204)
+        if request.url.path.endswith("/commit"):
+            return httpx.Response(
+                200,
+                json={"path": "stream", "events_url": "/v1/runs/run-1/events"},
+            )
+        if request.url.path == "/v1/runs/run-1/events":
+            body = (
+                'event: answer.started\ndata: {"sources":[{"document_id":"doc-1"}]}\n\n'
+                "event: answer.completed\n"
+                'data: {"path":"stream","answer":"Example City",'
+                '"timing":{"accepted_retrieval_lead_at_commit_ms":20.0},'
+                '"usage":{},"estimated_cost_usd":0.0,'
+                '"retrieval":{"accepted_ready_before_commit":true,'
+                '"accepted_from_fallback":false},'
+                '"reuse":{"mode":"precommit_exact"}}\n\n'
+            )
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+        if request.url.path.endswith("/events"):
+            assert snapshots
+            revision = snapshots[-1]["revision"]
+            body = (
+                "event: draft.settled\n"
+                f'data: {{"revision":{revision},"query":{json.dumps(query)},'
+                '"state":"ready"}\n\n'
+                "event: retrieval.started\n"
+                f'data: {{"revision":{revision},"query":{json.dumps(query)}}}\n\n'
+            )
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    lifecycle = {"turn_cleanup_status": "pending"}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        output = await runner.replay_path(
+            client=client,
+            base_url="http://stream.test",
+            row={
+                "id": "dev-transport",
+                "query": query,
+                "query_time": "2026-01-01T00:00:00Z",
+            },
+            repetition=1,
+            words_per_minute=1_000_000,
+            post_typing_dwell_ms=450,
+            path="stream",
+            path_order_position=1,
+            run_tag="transport-test",
+            max_typing_drift_ms=100,
+            lifecycle=lifecycle,
+        )
+
+    assert snapshots == [
+        {
+            "session_id": "bench-transport-test-1-dev-transport-stream",
+            "revision": 1,
+            "text": query,
+        }
+    ]
+    commit = next(payload for method, path, payload in requests if path.endswith("/commit"))
+    assert commit == {
+        "session_id": "bench-transport-test-1-dev-transport-stream",
+        "revision": 2,
+        "text": query,
+        "query_time": "2026-01-01T00:00:00Z",
+    }
+    assert output["answer"] == "Example City"
+    assert output["sources"] == [{"document_id": "doc-1"}]
+    assert output["exact_final_snapshot_completed"] is True
+    assert output["settled_final_snapshot_observed"] is True
+    assert output["snapshot_transport_errors"] == 0
+    assert output["diagnostics"]["evidence_stage"] == "presubmit_reuse"
+    assert lifecycle["turn_cleanup_status"] == "not_required"
+    assert not any(method == "DELETE" for method, _, _ in requests)

@@ -14,7 +14,6 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY shared ./shared
 COPY stream ./stream
 COPY data/crag_eval ./data/crag_eval
-COPY README.md ./README.md
 RUN uv sync --frozen --no-dev
 
 RUN mkdir -p /app/var

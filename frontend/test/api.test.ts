@@ -90,7 +90,7 @@ function dataStatus(implementation: "naive" | "stream"): ServiceDataStatus {
     reasoning_effort: "medium",
     summary_reasoning_effort: "low",
     ...(implementation === "stream"
-      ? { trigger_reasoning_effort: "low", settled_draft_delay_ms: 800 }
+      ? { trigger_reasoning_effort: "low", settled_draft_delay_ms: 500 }
       : {}),
     service_tier: "default",
     configuration: { retrieval_top_k: 5 },
@@ -121,7 +121,7 @@ function health(implementation: "naive" | "stream") {
     reasoning_effort: "medium",
     summary_reasoning_effort: "low",
     ...(implementation === "stream"
-      ? { trigger_reasoning_effort: "low", settled_draft_delay_ms: 800 }
+      ? { trigger_reasoning_effort: "low", settled_draft_delay_ms: 500 }
       : {}),
     service_tier: "default",
     instance_id: `${implementation}-instance`,
@@ -140,6 +140,7 @@ test("topology validation checks service roles, metrics contract, and shared ide
   assert.equal(topology.comparisonError, null);
   assert.equal(topology.services.naive?.health.implementation, "naive");
   assert.equal(topology.services.stream?.health.supports_snapshots, true);
+  assert.equal(topology.services.stream?.health.settled_draft_delay_ms, 500);
 });
 
 test("topology rejects a URL serving the wrong implementation role", async () => {

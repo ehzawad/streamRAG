@@ -112,6 +112,18 @@ deterministic distractors make retrieval non-trivial. Normal reproduction uses
 the committed compressed corpus and does not download the 705 MiB upstream
 release.
 
+To audit the construction from Meta's pinned upstream release:
+
+```bash
+make rebuild-dataset
+```
+
+The target downloads and checksum-verifies the source only when needed, rebuilds
+into the ignored `var/rebuilt-crag-eval` directory, and verifies the result. It
+refuses to replace an existing rebuild and never modifies the reviewed
+`data/crag_eval` dataset. Use a different ignored staging directory with
+`REBUILT_DATASET_DIR=var/<name>`.
+
 The source is Meta's
 [CRAG Task 1/2 development release](https://github.com/facebookresearch/CRAG),
 licensed CC BY-NC 4.0. Source IDs and URLs remain in each row for audit and

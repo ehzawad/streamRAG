@@ -38,7 +38,8 @@ from scripts.crag_source import (
 from scripts.stabilization import heuristic_stabilization_class
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "data" / "crag_eval"
+COMMITTED_DATASET_DIR = ROOT / "data" / "crag_eval"
+DEFAULT_OUTPUT = ROOT / "var" / "rebuilt-crag-eval"
 APPROVAL_STATUS = "candidate_pending_human_review"
 SEED = "fundednext-typed-streamrag-crag-eval"
 TARGET_CORPUS_DOCUMENTS = 250
@@ -1001,6 +1002,8 @@ def main() -> None:
             f"source checksum mismatch: expected {args.expected_source_sha256}, got {actual_digest}"
         )
     output = args.output_dir.resolve()
+    if output.is_relative_to(COMMITTED_DATASET_DIR.resolve()):
+        raise SystemExit("refusing to replace the reviewed data/crag_eval dataset")
     if output.exists():
         raise SystemExit(f"output already exists; refusing to overwrite: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
