@@ -69,14 +69,14 @@ users need only the frontend URL.
 
 ```bash
 make setup
-make verify-data
 make check
 make docker-config
 ```
 
 `make check` runs Python linting and tests, frontend tests, and a production
-frontend build. `make verify-data` validates the checksum-bound corpus and the
-deterministic 1,000-point target without calling OpenAI.
+frontend build. The committed corpus is checksum-bound; each service verifies
+those checksums when it loads the dataset, so no separate verification step is
+required.
 
 Useful live checks:
 

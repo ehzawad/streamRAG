@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from scripts.verify_dataset import EXPECTED_TEXT_INPUT_CONTRACT
 from shared.config import settings
 from shared.data.crag import (
     FORBIDDEN_DOCUMENT_KEYS,
@@ -45,7 +44,6 @@ def test_fixed_split_and_no_runtime_gold_leakage() -> None:
     assert summary["corpus"]["full_documents_only"] is True
     assert summary["corpus"]["documents"] == 250
     assert summary["corpus"]["estimated_index_points"] <= 1_000
-    assert summary["selection"]["text_input_contract"] == EXPECTED_TEXT_INPUT_CONTRACT
     assert not ({row["id"] for row in dev} & {row["id"] for row in test})
     assert all(not (FORBIDDEN_DOCUMENT_KEYS & row.keys()) for row in documents)
     assert all("answer" not in row and "alt_answers" not in row for row in test)

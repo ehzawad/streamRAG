@@ -14,7 +14,6 @@ BOUNDARIES = {
     "naive": {"stream", "comparison"},
     "stream": {"naive", "comparison"},
     "comparison": {"shared", "naive", "stream"},
-    "scripts": {"naive", "stream", "comparison"},
 }
 
 
@@ -207,13 +206,3 @@ def test_stream_entrypoint_imports_without_naive_or_comparison() -> None:
     )
 
 
-def test_shared_dataset_tooling_imports_without_any_application_package() -> None:
-    assert_isolated_import_succeeds(
-        {"naive", "stream", "comparison"},
-        """
-        from scripts.prepare_crag_text_global import heuristic_stabilization_class
-
-        label, _ = heuristic_stabilization_class("which album was released first", "simple")
-        assert label in {"early_stabilization", "late_stabilization", "revision_or_ambiguity"}
-        """,
-    )

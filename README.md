@@ -89,10 +89,12 @@ Component-specific commands remain in the README inside each component folder.
 
 ```bash
 make setup
-make verify-data
 make check
 make docker-config
 ```
+
+The committed corpus is checksum-bound; each service verifies those checksums
+when it loads the dataset, so no separate data-verification step is required.
 
 The local stack has no authentication and binds host ports to loopback. Do not
 publish it unchanged: a network deployment needs TLS, identity and authorization,

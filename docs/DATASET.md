@@ -91,12 +91,10 @@ approval must update the review state to `approved_frozen`, regenerate
 
 ## Integrity and leakage boundary
 
-```bash
-make verify-data
-```
-
-The verifier checks all nine bound files, 250 source rows, deterministic chunking,
-and the 1,000-point target. During final evaluation, tooling creates a redacted
+The corpus is checksum-bound by `checksums.sha256`. Each service verifies those
+checksums when it loads the dataset (`capture_dataset_snapshot`), covering all
+bound files, the 250 source rows, and deterministic chunking to the 1,000-point
+target, so no separate verification command is required. During final evaluation, tooling creates a redacted
 inference bundle containing the corpus and test questions but no gold. Predictions
 are finalized and hashed before the offline scorer can read `test_gold.jsonl`.
 
@@ -112,17 +110,11 @@ deterministic distractors make retrieval non-trivial. Normal reproduction uses
 the committed compressed corpus and does not download the 705 MiB upstream
 release.
 
-To audit the construction from Meta's pinned upstream release:
-
-```bash
-make rebuild-dataset
-```
-
-The target downloads and checksum-verifies the source only when needed, rebuilds
-into the ignored `var/rebuilt-crag-eval` directory, and verifies the result. It
-refuses to replace an existing rebuild and never modifies the reviewed
-`data/crag_eval` dataset. Use a different ignored staging directory with
-`REBUILT_DATASET_DIR=var/<name>`.
+The construction tooling that built this corpus from Meta's pinned upstream
+release (download, clean, select, chunk, and verify) was intentionally removed to
+keep the shipped surface minimal. The committed `data/crag_eval/` corpus is
+checksum-bound and sufficient to run and reproduce the benchmark from a clean
+checkout; the original generation scripts remain in the Git history.
 
 The source is Meta's
 [CRAG Task 1/2 development release](https://github.com/facebookresearch/CRAG),
