@@ -119,10 +119,7 @@ def _dataset_status_state(
         except OSError, RuntimeError:
             current_index_source = "unavailable"
         fingerprints = {
-            "dataset_checksum": "unavailable",
             "serving_dataset_checksum": "unavailable",
-            "freeze_id": "unavailable",
-            "dataset_sha256": "unavailable",
             "documents_sha256": "unavailable",
         }
     return {
@@ -132,9 +129,6 @@ def _dataset_status_state(
         "verified_files": verified_files,
         "current_index_source": current_index_source,
         "fingerprints": {
-            "backend_source_sha256": startup_fingerprints["backend_source_sha256"],
-            "shared_source_sha256": startup_fingerprints["shared_source_sha256"],
-            "implementation_source_sha256": startup_fingerprints["implementation_source_sha256"],
             "config_hash": startup_fingerprints["config_hash"],
             **fingerprints,
         },

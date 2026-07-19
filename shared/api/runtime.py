@@ -85,7 +85,7 @@ class RagRuntime:
         self.index_maintenance = asyncio.Lock()
         self._index_maintenance_admitted = False
         self.instance_id = str(uuid.uuid4())
-        self.fingerprints = runtime_fingerprints(settings, path.name)
+        self.fingerprints = runtime_fingerprints(settings)
 
     def _ensure_index_available_locked(self) -> None:
         if self._index_maintenance_admitted or self.index_maintenance.locked():

@@ -99,12 +99,8 @@ export type ServiceDataStatus = {
   settled_draft_delay_ms?: number;
   service_tier: string;
   configuration: Record<string, unknown>;
-  shared_source_sha256: string;
   config_hash: string;
-  dataset_checksum: string;
   serving_dataset_checksum: string;
-  freeze_id: string;
-  dataset_sha256: string;
   documents_sha256: string;
 };
 
@@ -128,12 +124,8 @@ export const METRICS_CONTRACT_VERSION = 1;
 const TOPOLOGY_REQUEST_TIMEOUT_MS = 5_000;
 
 const COMMON_IDENTITY_FIELDS = [
-  "shared_source_sha256",
   "config_hash",
-  "dataset_checksum",
   "serving_dataset_checksum",
-  "freeze_id",
-  "dataset_sha256",
   "documents_sha256",
   "index_checksum",
   "index_source_sha256",
