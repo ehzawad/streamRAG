@@ -30,11 +30,6 @@ FULL_EVALUATION_REQUIRED_FILES = {
     "test_gold.jsonl",
     "test_queries.jsonl",
 }
-INFERENCE_BUNDLE_REQUIRED_FILES = {
-    "dataset_summary.json",
-    "inference_bundle.json",
-    "test_queries.jsonl",
-}
 DOCUMENT_FILENAMES = ("documents.jsonl", "documents.jsonl.bz2")
 SHA256_LINE = re.compile(r"^([0-9a-f]{64})  (.+)$")
 
@@ -49,8 +44,6 @@ class VerifiedDatasetSnapshot:
     documents_sha256: str
     documents_bytes: bytes
     serving_dataset_checksum: str
-    dataset_checksum: str
-    freeze_id: str
 
     def checksums(self) -> dict[str, str]:
         return dict(self.verified_files)
@@ -127,51 +120,11 @@ def capture_dataset_snapshot(dataset_dir: Path) -> VerifiedDatasetSnapshot:
         if actual != expected:
             raise RuntimeError(f"dataset checksum mismatch: {name}")
         entries[name] = actual
-        if name in {"dataset_summary.json", "inference_bundle.json", *DOCUMENT_FILENAMES}:
+        if name in {"dataset_summary.json", *DOCUMENT_FILENAMES}:
             captured[name] = content
 
     serving_dataset_checksum = hashlib.sha256(manifest_bytes).hexdigest()
-    dataset_checksum = serving_dataset_checksum
-    freeze_id = hashlib.sha256(
-        b"typed-streamrag-eval-freeze-v1\0" + dataset_checksum.encode("ascii")
-    ).hexdigest()
-    inference_present = (root / "inference_bundle.json").is_file()
-    if inference_present != ("inference_bundle.json" in entries):
-        raise RuntimeError("inference_bundle.json presence does not match the checksum manifest")
-    inference_bytes = captured.get("inference_bundle.json")
-    if inference_bytes is not None:
-        try:
-            inference = json.loads(inference_bytes)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("inference_bundle.json is invalid JSON") from exc
-        if inference.get("bundle_role") != "inference_corpus":
-            raise RuntimeError("inference bundle has an invalid bundle_role")
-        if inference.get("approval_status") != "approved_frozen":
-            raise RuntimeError("inference bundle is not approved_frozen")
-        if (root / "test_gold.jsonl").exists() or "test_gold.jsonl" in entries:
-            raise RuntimeError("inference bundle must not contain scorer-only test gold")
-        evaluation_checksum = str(inference.get("evaluation_manifest_sha256") or "")
-        if not re.fullmatch(r"[0-9a-f]{64}", evaluation_checksum):
-            raise RuntimeError("inference bundle has an invalid evaluation manifest checksum")
-        expected_freeze_id = hashlib.sha256(
-            b"typed-streamrag-eval-freeze-v1\0" + evaluation_checksum.encode("ascii")
-        ).hexdigest()
-        if inference.get("freeze_id") != expected_freeze_id:
-            raise RuntimeError("inference bundle freeze_id does not match its evaluation manifest")
-        dataset_checksum = evaluation_checksum
-        freeze_id = expected_freeze_id
-        document_name = str(inference.get("documents_filename") or "documents.jsonl")
-        if document_name not in DOCUMENT_FILENAMES:
-            raise RuntimeError("inference bundle has an invalid documents_filename")
-        for name, field in (
-            (document_name, "documents_sha256"),
-            ("test_queries.jsonl", "test_queries_sha256"),
-        ):
-            if inference.get(field) != entries.get(name):
-                raise RuntimeError(f"inference bundle {field} does not match {name}")
-        required_files = INFERENCE_BUNDLE_REQUIRED_FILES
-    else:
-        required_files = FULL_EVALUATION_REQUIRED_FILES
+    required_files = FULL_EVALUATION_REQUIRED_FILES
     document_entries = sorted(set(entries) & set(DOCUMENT_FILENAMES))
     if len(document_entries) != 1:
         raise RuntimeError("checksum manifest must bind exactly one documents.jsonl representation")
@@ -195,8 +148,6 @@ def capture_dataset_snapshot(dataset_dir: Path) -> VerifiedDatasetSnapshot:
         documents_sha256=entries[document_name],
         documents_bytes=captured[document_name],
         serving_dataset_checksum=serving_dataset_checksum,
-        dataset_checksum=dataset_checksum,
-        freeze_id=freeze_id,
     )
 
 
