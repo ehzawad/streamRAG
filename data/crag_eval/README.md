@@ -1,48 +1,30 @@
-# CRAG text evaluation dataset
+# CRAG evaluation data
 
-> **Status: PENDING HUMAN REVIEW.** This output is not frozen and must not be used
-> for a final unseen benchmark yet.
+This directory is the complete, committed dataset used by both application paths.
+It contains 5 development questions, 10 sealed test questions, and
+250 complete CRAG pages. Only `documents.jsonl.bz2` is embedded: its
+full pages produce 1,000 chunks under the fixed indexing contract. No page
+is shortened.
 
-This candidate contains 5 development and 10 test questions,
-matching the assessment's guidance that ten to twenty fixed test queries is plenty.
-All questions retrieve over one deduplicated global corpus of
-250 pages derived from the supplied official CRAG JSONL. Every
-included page keeps its complete cleaned text. One concise, manually audited evidence page
-is retained for every question, including contradiction evidence for the false-premise
-control; a fixed-hash distractor sample fills the corpus. If needed,
-the largest sampled distractors are replaced with smaller complete pages solely to meet
-the assignment runtime budget; no page is cut. The resulting
-1,000 chunks stay at or below the
-1,000-point embedded-Qdrant target and require no Qdrant API key.
+## Status
 
-The construction is text-specific: approximate standard five-character WPM typing,
-sample changed-only cumulative dirty text every 400 ms (partial words included) at ticks
-strictly before **Send**, emit no snapshot for unchanged ticks, start exact speculative
-retrieval after the latest delivered draft remains unchanged for 500 ms, carry full text
-in the higher-revision commit, and exclude speech-only latency gains. The quiet-period
-retrieval cannot generate an answer; only **Send** can do that.
+`candidate_pending_human_review` means the dataset is proposed but not frozen.
+Review every item and the corpus checklist in `REVIEW_SHEET.md` without viewing
+either path's predictions. The final unseen benchmark must wait until corrections
+are resolved and the status is deliberately changed to `approved_frozen`.
 
-The official Task 1/2 release contains up to five pages per query. This evaluation instead
-aggregates 250 complete pages into one global, distractor-rich corpus. It does **not**
-reproduce the Stream RAG paper's separately described 100,000-document corpus or BGE
-reranking stack.
+## Files
 
-Test labels are stored only in `test_gold.jsonl`; the application indexes only
-the checksum-bound `documents.jsonl.bz2` corpus. Selection is the fixed manual mapping
-in the preparation script. Its exact support IDs and evidence phrases are validated
-against the pinned source, and neither implementation's outputs are consulted.
+- `documents.jsonl.bz2`: retrievable full-page corpus; contains no query or gold wrappers.
+- `dev_queries.jsonl`: visible questions for development and smoke benchmarks.
+- `test_queries.jsonl`: sealed questions without answers.
+- `test_gold.jsonl`: scorer-only expected answers and accepted evidence IDs.
+- `dataset_summary.json`: corpus statistics, input contract, and approval status.
+- `selection_manifest.json`: provenance, split roles, and support-document mapping.
+- `leakage_audit.json`: checks that labels and wrapper fields are not retrievable.
+- `REVIEW_SHEET.md`: human QA checklist for questions, evidence, classes, and corpus.
+- `checksums.sha256`: integrity hashes for every committed dataset artifact.
 
-Scorer-only gold rows freeze the audited `supporting_doc_ids`. Human review may
-add genuinely supporting pages to `acceptable_supporting_doc_ids`; citation syntax
-alone is never reported as grounded correctness.
-
-Each selected query receives an `early_stabilization`, `late_stabilization`, or
-`revision_or_ambiguity` candidate label only after selection. These transparent
-lexical/question-type heuristics are pending manual review and must not be used to
-cherry-pick questions based on benchmark outcomes.
-
-The heuristic follows the entity/constraint-position hypothesis in
-<https://arxiv.org/abs/2606.20113>, not a simple-complex type ranking. That paper
-finds comparison and aggregation can stabilize early, set questions are the clearest
-late extreme, and question type explains only a small share of variation. All labels
-therefore have low confidence; measured prefix retrieval traces are authoritative.
+The selection is fixed independently of Naive RAG and StreamRAG outputs.
+Development items may be debugged; sealed test labels must remain scorer-only.
+See `../../docs/DATASET.md` for the construction and approval policy.

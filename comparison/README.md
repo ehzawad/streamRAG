@@ -1,13 +1,13 @@
-# Headless comparison CLI
+# Comparison CLI
 
-`comparison/` provisions two isolated services, replays the same typed questions,
-records content-addressed predictions, scores them offline, and renders reports.
-It has no GUI and imports no application package; all runtime communication uses
-HTTP/JSON/SSE.
+`comparison/` is the headless benchmark consumer. It provisions isolated Naive
+RAG and StreamRAG services, replays identical typed questions, records
+content-addressed predictions, and scores them offline. It has no GUI and
+communicates only over HTTP/JSON/SSE.
 
-The runner validates each API's role, capabilities, contract, fingerprints,
-index health, and state identity. Gold is unavailable during inference and is
-given only to the offline scorer after predictions are finalized.
+The runner checks each service's role, contract, fingerprints, index health, and
+state identity. Gold answers are unavailable during inference and reach only the
+offline scorer after predictions are finalized.
 
 ## Development run
 
@@ -15,22 +15,23 @@ given only to the offline scorer after predictions are finalized.
 make benchmark-dev-services-check
 make benchmark-dev-services-sync
 
-# terminal A
+# Terminal A
 make benchmark-dev-services-serve
 
-# terminal B
+# Terminal B
 make benchmark-smoke
 make score-dev
 ```
 
-Provisioning builds one real-API seed index, stops it, verifies no pending
-writes, and copies it into isolated Naive and Stream state. The running services
-share no Qdrant, SQLite, metrics, sessions, or caches.
+The committed development report is in
+`benchmark/results/dev-comparison/`. There is no committed `final/` result yet:
+the sealed test run is allowed only after human dataset approval, and the final
+directory is created by that real run.
 
-Development mode reads only 5 visible questions. The final CLI requires an
-approved redacted inference bundle and all 10 sealed questions. Shared metrics
-cover latency, reliability, automatic answer/citation proxies, usage, accounting
-coverage, and observed cost; Stream scheduling diagnostics remain separate.
+Development mode uses five visible questions. Final evaluation requires an
+approved redacted inference bundle and all ten sealed questions. The report
+compares common latency, correctness, reliability, usage, and cost metrics;
+StreamRAG scheduling diagnostics remain path-specific.
 
 ```bash
 uv run pytest -q comparison/tests

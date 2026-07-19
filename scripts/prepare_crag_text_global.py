@@ -832,16 +832,44 @@ def write_candidate_outputs(
         + "\n",
         encoding="utf-8",
     )
+    evidence_lookup_instruction = (
+        "   '<document-id>' data/crag_eval/documents.jsonl.bz2`) and verify "
+        "wording, time anchor, expected"
+    )
     review_lines = [
         "# CRAG text evaluation dataset — human review sheet",
         "",
         "> **Status: PENDING HUMAN REVIEW.** Do not freeze or run the unseen test split",
         "> until every item and the global-corpus construction have been reviewed.",
         "",
-        "This candidate is deliberately text-first: changed-only cumulative dirty text is",
-        "sampled every 400 ms before Send; unchanged ticks emit no snapshot. The commit",
-        "carries final text as a higher",
-        "revision; speech-only gains are out of scope.",
+        "This is a dataset-quality review, not an application or model-output review. Work",
+        "only from each question, expected answer, source pages, and the proposed support",
+        "document. Do not inspect Naive RAG or StreamRAG predictions while deciding whether",
+        "an item belongs in the evaluation set.",
+        "",
+        "## What the fields mean",
+        "",
+        "- **Gold** is the expected answer; **Aliases** are equivalent scorer-accepted forms.",
+        "- **Own-page evidence covered** says whether a selected source page supports the",
+        "  answer, or supports the intended abstention for a false premise.",
+        "- **Proposed supporting document IDs** name the exact committed corpus pages to",
+        "  verify; they are candidates until this review is complete.",
+        "- **Candidate stabilization class** predicts when the information need becomes",
+        "  clear while a person types. It is a low-confidence review aid, not a result.",
+        "- **Role** is `dev` for visible development items and `test` for the sealed final",
+        "  comparison. Accepting it confirms only that split assignment.",
+        "",
+        "## How to review",
+        "",
+        "1. Find each proposed ID in `documents.jsonl.bz2` (for example, `bzgrep",
+        evidence_lookup_instruction,
+        "   answer, and aliases against that committed text and the listed source pages.",
+        "2. Read the query left to right and judge whether its stabilization class is",
+        "   plausible without viewing either path's outputs.",
+        "3. Confirm the development/test role, tick the six item boxes, and record any",
+        "   correction in the dataset change before approval.",
+        "4. Complete the corpus checklist at the end. Ticking boxes documents review; the",
+        "   approval status remains separate until all corrections are resolved.",
         "",
     ]
     for item in review:
@@ -865,7 +893,7 @@ def write_candidate_outputs(
                 f"- **Gold:** {item['answer']}",
                 f"- **Aliases:** {', '.join(item['alt_answers']) or '—'}",
                 f"- **Own-page evidence covered:** {coverage}",
-                "- **Audited supporting document IDs:** "
+                "- **Proposed supporting document IDs:** "
                 + (", ".join(item["supporting_doc_ids"]) or "none"),
                 "- **Original CRAG pages:**",
             ]
@@ -876,63 +904,66 @@ def write_candidate_outputs(
         )
         review_lines.extend(
             [
-                "- [ ] Wording and temporal anchor are clear",
-                "- [ ] Gold and aliases are correct",
-                "- [ ] Evidence is sufficient or abstention is intentional",
-                "- [ ] Prefix has a plausible early-stabilization point",
-                "- [ ] Confirm or correct stabilization class without viewing path outputs",
-                "- [ ] Accept split role",
+                "- [ ] Question wording and time anchor are clear",
+                "- [ ] Expected answer and aliases are factually correct",
+                "- [ ] Committed support document proves the answer or intended abstention",
+                "- [ ] Typing can plausibly stabilize as classified",
+                "- [ ] Stabilization class accepted or corrected without model outputs",
+                "- [ ] Split assignment accepted (development or test)",
                 "",
             ]
         )
+    review_lines.extend(
+        [
+            "## Global corpus checklist",
+            "",
+            "- [ ] The corpus contains 250 complete CRAG source pages; no page is shortened",
+            "- [ ] The 15 preselected support documents and 235 distractors are acceptable",
+            (
+                "- [ ] Query, answer, split, and gold wrapper fields are absent from "
+                "retrievable documents"
+            ),
+            "- [ ] Test labels remain scorer-only and are not available to either application path",
+            "- [ ] The expected 1,000 chunks fit the local-Qdrant runtime target",
+            "- [ ] Every item review is complete and all requested corrections are resolved",
+            "",
+        ]
+    )
     (stage / "REVIEW_SHEET.md").write_text("\n".join(review_lines) + "\n", encoding="utf-8")
-    readme = f"""# CRAG text evaluation dataset
+    development_count = len(dev_rows)
+    test_count = len(test_rows)
+    document_count = f'{corpus_stats["documents"]:,}'
+    point_count = f'{corpus_stats["estimated_index_points"]:,}'
+    readme = f"""# CRAG evaluation data
 
-> **Status: PENDING HUMAN REVIEW.** This output is not frozen and must not be used
-> for a final unseen benchmark yet.
+This directory is the complete, committed dataset used by both application paths.
+It contains {development_count} development questions, {test_count} sealed test questions, and
+{document_count} complete CRAG pages. Only `documents.jsonl.bz2` is embedded: its
+full pages produce {point_count} chunks under the fixed indexing contract. No page
+is shortened.
 
-This candidate contains {len(dev_rows)} development and {len(test_rows)} test questions,
-matching the assessment's guidance that ten to twenty fixed test queries is plenty.
-All questions retrieve over one deduplicated global corpus of
-{corpus_stats["documents"]:,} pages derived from the supplied official CRAG JSONL. Every
-included page keeps its complete cleaned text. One concise, manually audited evidence page
-is retained for every question, including contradiction evidence for the false-premise
-control; a fixed-hash distractor sample fills the corpus. If needed,
-the largest sampled distractors are replaced with smaller complete pages solely to meet
-the assignment runtime budget; no page is cut. The resulting
-{corpus_stats["estimated_index_points"]:,} chunks stay at or below the
-{MAX_INDEX_POINTS:,}-point embedded-Qdrant target and require no Qdrant API key.
+## Status
 
-The construction is text-specific: approximate standard five-character WPM typing,
-sample changed-only cumulative dirty text every 400 ms (partial words included) at ticks
-strictly before **Send**, emit no snapshot for unchanged ticks during the declared
-post-typing pause, carry full text in the higher-revision commit, and exclude speech-only
-latency gains.
+`candidate_pending_human_review` means the dataset is proposed but not frozen.
+Review every item and the corpus checklist in `REVIEW_SHEET.md` without viewing
+either path's predictions. The final unseen benchmark must wait until corrections
+are resolved and the status is deliberately changed to `approved_frozen`.
 
-The official Task 1/2 release contains up to five pages per query. This evaluation instead
-aggregates {corpus_stats["documents"]:,} complete pages into one global, distractor-rich
-corpus. It does **not** reproduce the Stream RAG paper's separately described
-100,000-document corpus or BGE reranking stack.
+## Files
 
-Test labels are stored only in `test_gold.jsonl`; the application indexes only
-the checksum-bound `documents.jsonl.bz2` corpus. Selection is the fixed manual mapping
-in the preparation script. Its exact support IDs and evidence phrases are validated
-against the pinned source, and neither implementation's outputs are consulted.
+- `documents.jsonl.bz2`: retrievable full-page corpus; contains no query or gold wrappers.
+- `dev_queries.jsonl`: visible questions for development and smoke benchmarks.
+- `test_queries.jsonl`: sealed questions without answers.
+- `test_gold.jsonl`: scorer-only expected answers and accepted evidence IDs.
+- `dataset_summary.json`: corpus statistics, input contract, and approval status.
+- `selection_manifest.json`: provenance, split roles, and support-document mapping.
+- `leakage_audit.json`: checks that labels and wrapper fields are not retrievable.
+- `REVIEW_SHEET.md`: human QA checklist for questions, evidence, classes, and corpus.
+- `checksums.sha256`: integrity hashes for every committed dataset artifact.
 
-Scorer-only gold rows freeze the audited `supporting_doc_ids`. Human review may
-add genuinely supporting pages to `acceptable_supporting_doc_ids`; citation syntax
-alone is never reported as grounded correctness.
-
-Each selected query receives an `early_stabilization`, `late_stabilization`, or
-`revision_or_ambiguity` candidate label only after selection. These transparent
-lexical/question-type heuristics are pending manual review and must not be used to
-cherry-pick questions based on benchmark outcomes.
-
-The heuristic follows the entity/constraint-position hypothesis in
-<https://arxiv.org/abs/2606.20113>, not a simple-complex type ranking. That paper
-finds comparison and aggregation can stabilize early, set questions are the clearest
-late extreme, and question type explains only a small share of variation. All labels
-therefore have low confidence; measured prefix retrieval traces are authoritative.
+The selection is fixed independently of Naive RAG and StreamRAG outputs.
+Development items may be debugged; sealed test labels must remain scorer-only.
+See `../../docs/DATASET.md` for the construction and approval policy.
 """
     (stage / "README.md").write_text(readme, encoding="utf-8")
     compress_corpus(stage)

@@ -15,8 +15,8 @@ def _path_factory(current_settings: StreamSettings, store: QdrantVectorStore) ->
 
 app = create_app(
     implementation="stream",
-    api_title="Stream RAG Assessment API",
-    page_title="Typed StreamRAG",
+    api_title="StreamRAG API",
+    page_title="StreamRAG",
     page_subtitle=(
         "Correction-safe retrieval can prepare evidence while you type; answers wait for Send."
     ),

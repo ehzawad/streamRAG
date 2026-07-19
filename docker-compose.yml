@@ -1,3 +1,5 @@
+name: streamrag
+
 services:
   qdrant-naive:
     image: qdrant/qdrant:v1.18.3-unprivileged@sha256:affb67e1d6f2f93d7d20b90d238a7d4b974d36351c162e73bda794e4b2e03483

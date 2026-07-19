@@ -1,23 +1,19 @@
 # Shared infrastructure
 
-`shared/` is the common platform layer, not a third RAG product. It contains only
-behavior that must be identical for a fair comparison or can serve either app
-without knowing which one is active.
+`shared/` is infrastructure used by both RAG paths. It is not a third product and
+does not choose either path's retrieval schedule.
 
 It owns:
 
-- API lifecycle, commit/events routes, persistence, and the single-product UI
-  shell;
-- settings and source, configuration, and dataset fingerprints;
+- API lifecycle, events, persistence, and the standalone service UI;
+- settings, dataset checks, and reproducibility fingerprints;
 - CRAG checksums, chunking, embeddings, index readiness, and search;
-- grounded answers, the strict local-corpus tool, memory, and usage/cost
-  accounting;
-- schemas and the versioned telemetry contract.
+- grounded answers, local-corpus tooling, chat memory, and usage/cost accounting;
+- schemas and the telemetry contract.
 
-Naive owns committed-text retrieval policy. Stream owns draft analysis,
-triggering, speculation, and reuse. `frontend/` owns the GUI; `comparison/` owns
-headless replay and scoring. `shared/` imports none of them and is not runnable
-by itself.
+Naive RAG owns committed-text retrieval. StreamRAG owns draft analysis,
+speculation, and reuse. `frontend/` owns the GUI, while `comparison/` owns replay
+and scoring. `shared/` imports none of those packages and is not runnable alone.
 
 ```bash
 uv run pytest -q shared/tests

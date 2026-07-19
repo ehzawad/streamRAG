@@ -10,7 +10,7 @@ def _path_factory(current_settings, store: QdrantVectorStore) -> NaiveRagPath:
 
 app = create_app(
     implementation="naive",
-    api_title="Naive RAG Assessment API",
+    api_title="Naive RAG API",
     page_title="Naive RAG",
     page_subtitle="Retrieval starts from the exact committed question after Send.",
     settings_provider=lambda: settings,

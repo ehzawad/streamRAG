@@ -24,7 +24,6 @@ frontend/*.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
 comparison/benchmark/results/**
-!comparison/benchmark/results/.gitkeep
 !comparison/benchmark/results/dev-comparison/
 !comparison/benchmark/results/dev-comparison/predictions.jsonl
 !comparison/benchmark/results/dev-comparison/predictions.manifest.json
@@ -34,4 +33,3 @@ comparison/benchmark/results/**
 !comparison/benchmark/results/final/*.jsonl
 !comparison/benchmark/results/final/*.json
 !comparison/benchmark/results/final/*.md
-!comparison/benchmark/results/final/.gitkeep

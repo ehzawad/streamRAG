@@ -192,7 +192,7 @@ function appendTranscriptTurn(text) {
   const head = document.createElement("div");
   head.className = "message-head";
   const role = document.createElement("strong");
-  role.textContent = config.implementation === "stream" ? "Typed StreamRAG" : "Naive RAG";
+  role.textContent = config.implementation === "stream" ? "StreamRAG" : "Naive RAG";
   const state = document.createElement("span");
   state.textContent = "Waiting…";
   head.append(role, state);

@@ -731,8 +731,8 @@ export function App({ mode }: { mode: PathName }) {
       </nav>
       <header>
         <div>
-          <p className="eyebrow">Applied AI Engineer assessment</p>
-          <h1>Naive RAG vs typed StreamRAG</h1>
+          <p className="eyebrow">StreamRAG</p>
+          <h1>Naive RAG vs StreamRAG</h1>
           <p className="subhead">
             Two isolated APIs use the same checksum-bound corpus and common answer contract.
             StreamRAG can retrieve while you type; Naive RAG starts at Send. Compare fans the same
@@ -836,7 +836,7 @@ function ConversationTranscript({
               return (
                 <div className={`assistant-message ${path}`} key={path}>
                   <div>
-                    <small>{path === "naive" ? "Naive RAG" : "Typed StreamRAG"}</small>
+                    <small>{path === "naive" ? "Naive RAG" : "StreamRAG"}</small>
                     <span>{answer.status}</span>
                   </div>
                   <p className={answer.answer ? "" : "pending-answer"}>

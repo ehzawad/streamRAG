@@ -52,8 +52,8 @@ def test_each_service_has_its_own_entrypoint() -> None:
     from naive.api import app as naive_app
     from stream.api import app as stream_app
 
-    assert naive_app.title == "Naive RAG Assessment API"
-    assert stream_app.title == "Stream RAG Assessment API"
+    assert naive_app.title == "Naive RAG API"
+    assert stream_app.title == "StreamRAG API"
     assert naive_app is not stream_app
 
 
@@ -189,7 +189,7 @@ def test_naive_entrypoint_imports_without_stream_or_comparison() -> None:
         from naive.api import app
 
         routes = {getattr(route, "path", "") for route in app.routes}
-        assert app.title == "Naive RAG Assessment API"
+        assert app.title == "Naive RAG API"
         assert "/v1/turns/{turn_id}/snapshots" not in routes
         """,
     )
@@ -202,7 +202,7 @@ def test_stream_entrypoint_imports_without_naive_or_comparison() -> None:
         from stream.api import app
 
         routes = {getattr(route, "path", "") for route in app.routes}
-        assert app.title == "Stream RAG Assessment API"
+        assert app.title == "StreamRAG API"
         assert "/v1/turns/{turn_id}/snapshots" in routes
         """,
     )
