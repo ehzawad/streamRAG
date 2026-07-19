@@ -7,7 +7,6 @@ from typing import Annotated
 
 from fastapi import FastAPI, Header, HTTPException, Path, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
 from shared.agent.service import GroundedAgent
@@ -18,7 +17,6 @@ from shared.api.runtime import (
     TurnConflictError,
 )
 from shared.api.schemas import CommitAccepted, CommitRequest, SnapshotAccepted, SnapshotRequest
-from shared.api.web import standalone_page
 from shared.config import Settings
 from shared.data.crag import (
     VerifiedDatasetSnapshot,
@@ -152,8 +150,6 @@ def create_app(
     *,
     implementation: str,
     api_title: str,
-    page_title: str,
-    page_subtitle: str,
     settings_provider: SettingsProvider,
     path_factory: PathFactory,
     supports_snapshots: bool,
@@ -210,17 +206,8 @@ def create_app(
         allow_headers=["Content-Type", "Last-Event-ID"],
     )
 
-    @app.get("/", response_class=HTMLResponse)
-    async def root() -> str:
-        return standalone_page(
-            implementation=implementation,
-            supports_snapshots=supports_snapshots,
-            title=page_title,
-            subtitle=page_subtitle,
-        )
-
-    @app.get("/v1/info")
-    async def info() -> dict:
+    @app.get("/")
+    async def root() -> dict[str, str]:
         return {
             "service": f"{implementation}-rag-api",
             "implementation": implementation,

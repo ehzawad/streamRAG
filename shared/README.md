@@ -5,7 +5,7 @@ does not choose either path's retrieval schedule.
 
 It owns:
 
-- API lifecycle, events, persistence, and the standalone service UI;
+- API lifecycle, events, and persistence;
 - settings, dataset checks, and reproducibility fingerprints;
 - CRAG checksums, chunking, embeddings, index readiness, and search;
 - grounded answers, local-corpus tooling, chat memory, and usage/cost accounting;

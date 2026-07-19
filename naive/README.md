@@ -22,9 +22,9 @@ Build the local index once for fresh state:
 curl --fail --request POST http://127.0.0.1:8001/v1/data/sync
 ```
 
-Open <http://127.0.0.1:8001>; the API schema is at
+The root returns service metadata, and the API schema is at
 <http://127.0.0.1:8001/docs>. `ALLOW_UNREVIEWED_DATASET=1` is for development
-before the dataset review is complete.
+before the dataset review is complete. Use the separate `frontend/` for chat.
 
 Naive RAG reports the common answer, citation, latency, reliability, usage,
 retrieval, accounting, and observed-cost metrics. It does not emit StreamRAG

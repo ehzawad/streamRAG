@@ -62,8 +62,8 @@ Open <http://127.0.0.1:5173/> after both indexes are ready:
 | <http://127.0.0.1:5173/stream> | StreamRAG only |
 | <http://127.0.0.1:5173/compare> | simultaneous comparison |
 
-The direct developer UIs remain available at ports 8001 and 8002. End users need
-only the frontend URL.
+Ports 8001 and 8002 expose JSON APIs and generated OpenAPI documentation. End
+users need only the frontend URL.
 
 ## Verify the repository
 
