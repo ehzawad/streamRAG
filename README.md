@@ -84,6 +84,7 @@ parity plus the microbenchmark with `make bench-native`.
 - [Pipeline and architecture](docs/PIPELINE.md)
 - [Run and reproduce](docs/RUN.md)
 - [Benchmark report](docs/BENCHMARK_REPORT.md)
+- [Fully-local mode (single A5000, no hosted API)](docs/LOCAL.md)
 
 Component-specific commands remain in the README inside each component folder.
 
