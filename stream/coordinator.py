@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from shared.data.vector_store import QdrantVectorStore
 from shared.models import InputSnapshot, SearchResult, Usage
-from shared.query import bounded_retrieval_query
+from shared.query import bounded_retrieval_query, contextual_retrieval_query
 from stream.config import StreamSettings
 from stream.snapshot import SnapshotAnalyzer
 from stream.trigger import ModelTrigger
@@ -285,7 +285,7 @@ class StreamCoordinator:
             self._trigger_task = None
             self._track_cleanup(task)
 
-        query = bounded_retrieval_query(snapshot.text)
+        query = contextual_retrieval_query(snapshot.text, self.conversation_context)
         evidence = self.evidence
         if (
             evidence is not None
@@ -439,7 +439,11 @@ class StreamCoordinator:
                 snapshot.text,
                 minimum_words=self.settings.trigger_min_tokens,
             )
-            candidate_query = bounded_retrieval_query(raw_prefix) if raw_prefix else None
+            candidate_query = (
+                contextual_retrieval_query(raw_prefix, self.conversation_context)
+                if raw_prefix
+                else None
+            )
         self._trigger_task = asyncio.create_task(self._trigger_worker(snapshot, candidate_query))
         self._trigger_call_states[self._trigger_task] = "pending"
         if candidate_query is not None and raw_prefix is not None:

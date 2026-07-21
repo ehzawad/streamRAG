@@ -467,11 +467,17 @@ class RagRuntime:
             revision=request.revision,
             text=request.text,
         )
+        # Compact conversational state for multi-turn query rewriting at retrieval
+        # time (naive uses it directly; stream already captured it pre-Send).
+        conversation_context = await self.agent.conversation_context(
+            f"{request.session_id}:{self.path.name}"
+        )
         retrieval = await self.path.commit(
             snapshot=snapshot,
             session_id=request.session_id,
             committed_ms=committed_ms,
             turn=turn,
+            conversation_context=conversation_context,
         )
         await self._answer(
             run_id=run_id,

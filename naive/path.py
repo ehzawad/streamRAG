@@ -8,7 +8,7 @@ from shared.config import Settings
 from shared.data.vector_store import QdrantVectorStore
 from shared.models import InputSnapshot
 from shared.path import EventSink, PathTelemetry, PathTurn, cache_scope
-from shared.query import bounded_retrieval_query
+from shared.query import contextual_retrieval_query
 
 
 class NaiveRagPath:
@@ -43,11 +43,15 @@ class NaiveRagPath:
         session_id: str,
         committed_ms: float,
         turn: PathTurn | None,
+        conversation_context: str = "",
     ) -> PathTelemetry:
         del committed_ms
         if turn is not None:
             raise RuntimeError("Naive RAG commit received unexpected pre-Send state")
-        query = bounded_retrieval_query(snapshot.text)
+        # Resolve pronouns/ellipsis in multi-turn follow-ups from compact
+        # conversational state before retrieving (query text only; evidence stays
+        # turn-local). First turns pass empty context and are unchanged.
+        query = contextual_retrieval_query(snapshot.text, conversation_context)
         started_ms = time.perf_counter() * 1000
         try:
             result = await asyncio.wait_for(

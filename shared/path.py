@@ -88,6 +88,7 @@ class RagPath(Protocol):
         session_id: str,
         committed_ms: float,
         turn: PathTurn | None,
+        conversation_context: str = "",
     ) -> PathTelemetry: ...
 
     async def close(self) -> None: ...

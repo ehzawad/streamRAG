@@ -73,8 +73,11 @@ class StreamRagPath:
         session_id: str,
         committed_ms: float,
         turn: PathTurn | None,
+        conversation_context: str = "",
     ) -> PathTelemetry:
-        del session_id
+        # StreamRAG captured conversation context pre-Send at open_turn (held in
+        # the coordinator), so the commit-time copy is redundant here.
+        del session_id, conversation_context
         if not isinstance(turn, StreamCoordinator):
             raise RuntimeError("StreamRAG commit requires its frozen typed turn")
         commit_gate_started_ms = time.perf_counter() * 1000
