@@ -33,3 +33,4 @@ comparison/benchmark/results/**
 !comparison/benchmark/results/final/*.jsonl
 !comparison/benchmark/results/final/*.json
 !comparison/benchmark/results/final/*.md
+.local-state/

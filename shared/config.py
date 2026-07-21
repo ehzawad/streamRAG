@@ -25,17 +25,30 @@ class Settings:
     runtime_db: Path = Path(os.getenv("RUNTIME_DB", ROOT / "data" / "runtime.sqlite3"))
     metrics_log: Path = Path(os.getenv("METRICS_LOG", ROOT / "var" / "requests.jsonl"))
 
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.6-sol")
-    embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large")
+    # Local-serving mode: fully on-box, no hosted API. When true the answer
+    # model is an OpenAI-compatible local server (llama.cpp serving Qwen3.5-9B)
+    # and embeddings come from a local embedder; the hosted-model locks in
+    # validate() are relaxed. Set LOCAL_MODE=0 to restore the hosted baseline.
+    local_mode: bool = env_bool("LOCAL_MODE", True)
+    llm_base_url: str = os.getenv("LLM_BASE_URL", "http://127.0.0.1:8400/v1")
+    llm_api_key: str = os.getenv("LLM_API_KEY", "local")
+    # Qwen3.5 is a reasoning ("thinking") model; disabling thinking keeps the
+    # answer inside the token budget and preserves clean tool-call transcripts.
+    disable_thinking: bool = env_bool("DISABLE_THINKING", True)
+    embedding_base_url: str = os.getenv("EMBEDDING_BASE_URL", "http://127.0.0.1:8401/v1")
+
+    openai_model: str = os.getenv("OPENAI_MODEL", "qwen3.5-9b-local")
+    embedding_model: str = os.getenv("OPENAI_EMBEDDING_MODEL", "bge-large-en-v1.5")
     # Medium is the quality/latency balance for grounded answers. History
-    # compression remains deliberately low effort.
+    # compression remains deliberately low effort. (Hosted-mode only; the local
+    # chat model ignores reasoning-effort settings.)
     reasoning_effort: str = os.getenv("REASONING_EFFORT", "medium")
     summary_reasoning_effort: str = os.getenv("SUMMARY_REASONING_EFFORT", "low")
     openai_service_tier: str = os.getenv("OPENAI_SERVICE_TIER", "default")
     qdrant_url: str | None = os.getenv("QDRANT_URL") or None
     qdrant_api_key: str | None = os.getenv("QDRANT_API_KEY") or None
     qdrant_collection: str = os.getenv("QDRANT_COLLECTION", "crag_chunks")
-    embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "3072"))
+    embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
     openai_embedding_timeout_s: float = float(os.getenv("OPENAI_EMBEDDING_TIMEOUT_S", "45"))
     openai_embedding_max_retries: int = int(os.getenv("OPENAI_EMBEDDING_MAX_RETRIES", "0"))
     allow_unreviewed_dataset: bool = env_bool("ALLOW_UNREVIEWED_DATASET", False)
@@ -47,6 +60,12 @@ class Settings:
     context_token_budget: int = int(os.getenv("CONTEXT_TOKEN_BUDGET", "2600"))
     history_token_budget: int = int(os.getenv("HISTORY_TOKEN_BUDGET", "2200"))
     history_keep_turns: int = int(os.getenv("HISTORY_KEEP_TURNS", "4"))
+    # Generation caps. Local reasoning ("thinking") models spend tokens on a
+    # reasoning trace before the visible answer, so the answer cap must cover
+    # both. Configurable; defaults raised from the original 600/320 (which were
+    # sized for a non-thinking hosted model) so a local thinker can finish.
+    answer_max_tokens: int = int(os.getenv("ANSWER_MAX_TOKENS", "2048"))
+    summary_max_tokens: int = int(os.getenv("SUMMARY_MAX_TOKENS", "512"))
 
     retrieval_timeout_s: float = float(os.getenv("RETRIEVAL_TIMEOUT_S", "6.0"))
     answer_timeout_s: float = float(os.getenv("ANSWER_TIMEOUT_S", "30.0"))
@@ -77,22 +96,36 @@ class Settings:
     embedding_input_per_million: float = 0.13
 
     def validate(self) -> None:
-        if self.openai_model != "gpt-5.6-sol":
-            raise ValueError("the locked benchmark model is 'gpt-5.6-sol'")
-        if self.embedding_model != "text-embedding-3-large":
-            raise ValueError("the locked benchmark embedding model is 'text-embedding-3-large'")
-        if self.reasoning_effort != "medium":
-            raise ValueError(
-                "the locked grounded-answer configuration requires reasoning effort 'medium'"
-            )
-        if self.summary_reasoning_effort != "low":
-            raise ValueError("the locked summary role requires reasoning effort 'low'")
-        if self.embedding_dimensions != 3072:
-            raise ValueError(
-                "the locked text-embedding-3-large configuration requires 3072 dimensions"
-            )
-        if self.openai_service_tier != "default":
-            raise ValueError("the locked benchmark configuration requires service tier 'default'")
+        if self.local_mode:
+            # Fully-local mode: the hosted-model identity locks do not apply.
+            # Validate the local serving contract instead.
+            if not self.llm_base_url:
+                raise ValueError("LOCAL_MODE requires LLM_BASE_URL (local OpenAI-compatible LLM)")
+            if not self.embedding_base_url:
+                raise ValueError("LOCAL_MODE requires EMBEDDING_BASE_URL (local embedding server)")
+            if self.embedding_dimensions <= 0:
+                raise ValueError("EMBEDDING_DIMENSIONS must be positive")
+            if self.answer_max_tokens <= 0 or self.summary_max_tokens <= 0:
+                raise ValueError("generation token caps must be positive")
+        else:
+            if self.openai_model != "gpt-5.6-sol":
+                raise ValueError("the locked benchmark model is 'gpt-5.6-sol'")
+            if self.embedding_model != "text-embedding-3-large":
+                raise ValueError("the locked benchmark embedding model is 'text-embedding-3-large'")
+            if self.reasoning_effort != "medium":
+                raise ValueError(
+                    "the locked grounded-answer configuration requires reasoning effort 'medium'"
+                )
+            if self.summary_reasoning_effort != "low":
+                raise ValueError("the locked summary role requires reasoning effort 'low'")
+            if self.embedding_dimensions != 3072:
+                raise ValueError(
+                    "the locked text-embedding-3-large configuration requires 3072 dimensions"
+                )
+            if self.openai_service_tier != "default":
+                raise ValueError(
+                    "the locked benchmark configuration requires service tier 'default'"
+                )
         if self.chunk_tokens <= 0:
             raise ValueError("chunk size must be positive")
         if not 0 <= self.chunk_overlap < self.chunk_tokens:

@@ -164,6 +164,8 @@ def create_app(
                 settings.embedding_model,
                 timeout_s=settings.openai_embedding_timeout_s,
                 max_retries=settings.openai_embedding_max_retries,
+                base_url=settings.embedding_base_url if settings.local_mode else None,
+                api_key=settings.llm_api_key if settings.local_mode else None,
             ),
             IndexStateRepository(settings.runtime_db),
         )

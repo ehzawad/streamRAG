@@ -5,10 +5,10 @@ from dataclasses import dataclass
 
 from pydantic_ai import Agent, ModelMessage, UsageLimits
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
-from pydantic_ai.models.openai import OpenAIResponsesModelSettings
+from pydantic_ai.models.openai import OpenAIChatModelSettings
 
 from shared.agent.context import token_count
-from shared.agent.openai_client import responses_model
+from shared.agent.openai_client import chat_model
 from shared.config import Settings
 from shared.data.session_store import SessionMemory
 from shared.models import Usage
@@ -48,17 +48,18 @@ class ConversationSummarySkill:
     """Explicit reusable skill invoked only when durable history exceeds budget."""
 
     def __init__(self, settings: Settings):
-        model, self._client = responses_model(
+        model, self._client = chat_model(
             settings,
             timeout_s=settings.summary_timeout_s,
         )
-        model_settings = OpenAIResponsesModelSettings(
-            openai_reasoning_effort=settings.summary_reasoning_effort,
-            openai_reasoning_mode="standard",
-            openai_service_tier=settings.openai_service_tier,
-            openai_store=False,
-            openai_text_verbosity="low",
-            max_tokens=320,
+        model_settings = OpenAIChatModelSettings(
+            temperature=0.0,
+            max_tokens=settings.summary_max_tokens,
+            extra_body=(
+                {"chat_template_kwargs": {"enable_thinking": False}}
+                if settings.local_mode and settings.disable_thinking
+                else {}
+            ),
         )
         self.agent = Agent(
             model,
@@ -94,7 +95,9 @@ class ConversationSummarySkill:
             async with asyncio.timeout(self.settings.summary_timeout_s):
                 result = await self.agent.run(
                     prompt,
-                    usage_limits=UsageLimits(request_limit=1, output_tokens_limit=320),
+                    usage_limits=UsageLimits(
+                        request_limit=1, output_tokens_limit=self.settings.summary_max_tokens
+                    ),
                 )
         except TimeoutError:
             return CompressionResult(

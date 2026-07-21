@@ -28,9 +28,22 @@ class OpenAIEmbedder:
         *,
         timeout_s: float = 45.0,
         max_retries: int = 0,
+        base_url: str | None = None,
+        api_key: str | None = None,
     ):
         self.model = model
-        self.client = client or AsyncOpenAI(timeout=timeout_s, max_retries=max_retries)
+        if client is not None:
+            self.client = client
+        elif base_url:
+            # Local OpenAI-compatible embedding server (e.g. llama.cpp --embedding).
+            self.client = AsyncOpenAI(
+                base_url=base_url,
+                api_key=api_key or "local",
+                timeout=timeout_s,
+                max_retries=max_retries,
+            )
+        else:
+            self.client = AsyncOpenAI(timeout=timeout_s, max_retries=max_retries)
 
     async def embed(self, texts: Sequence[str]) -> tuple[np.ndarray, int]:
         if not texts:

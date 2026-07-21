@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 from dataclasses import dataclass
@@ -18,10 +17,10 @@ from pydantic_ai import (
     TextPartDelta,
     UsageLimits,
 )
-from pydantic_ai.models.openai import OpenAIResponsesModelSettings
+from pydantic_ai.models.openai import OpenAIChatModelSettings
 
 from shared.agent.context import tool_result_json
-from shared.agent.openai_client import responses_model
+from shared.agent.openai_client import chat_model
 from shared.agent.summary_skill import (
     ConversationSummarySkill,
     append_conversation_turn,
@@ -47,6 +46,15 @@ Call search_local_crag at most once, only when that evidence cannot answer the
 question and a materially different local-corpus query could recover it.
 search_local_crag never accesses the public internet.
 """
+
+
+def thinking_extra_body(settings: Settings) -> dict:
+    """llama.cpp chat-template control. Qwen3.5 is a reasoning model; disabling
+    thinking keeps the visible answer inside the token budget and yields clean
+    tool-call transcripts. No-op against hosted OpenAI (ignored extra field)."""
+    if settings.local_mode and settings.disable_thinking:
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    return {}
 
 
 @dataclass
@@ -152,18 +160,15 @@ class GroundedAgent:
         self.store = store
         self.sessions = sessions
         self.summary_skill = ConversationSummarySkill(settings)
-        model, self._client = responses_model(
+        model, self._client = chat_model(
             settings,
             timeout_s=settings.answer_timeout_s,
         )
-        model_settings = OpenAIResponsesModelSettings(
-            openai_reasoning_effort=settings.reasoning_effort,
-            openai_reasoning_mode="standard",
-            openai_service_tier=settings.openai_service_tier,
-            openai_store=False,
-            openai_text_verbosity="low",
+        model_settings = OpenAIChatModelSettings(
             parallel_tool_calls=False,
-            max_tokens=600,
+            temperature=0.0,
+            max_tokens=settings.answer_max_tokens,
+            extra_body=thinking_extra_body(settings),
         )
         self.agent = Agent(
             model,
@@ -221,17 +226,10 @@ class GroundedAgent:
                 deps=deps,
                 message_history=memory.messages,
                 conversation_id=session_key,
-                model_settings=OpenAIResponsesModelSettings(
-                    openai_service_tier=self.settings.openai_service_tier,
-                    openai_prompt_cache_key=(
-                        "streamrag-"
-                        + hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:32]
-                    ),
-                ),
                 usage_limits=UsageLimits(
                     request_limit=2,
                     tool_calls_limit=1,
-                    output_tokens_limit=600,
+                    output_tokens_limit=self.settings.answer_max_tokens,
                 ),
             ) as events:
                 async for event in events:
