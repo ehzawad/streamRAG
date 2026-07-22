@@ -81,7 +81,6 @@ export type BackendEvent = {
   actor?: Actor;
   turn_id?: string;
   revision?: number;
-  analyzer?: string;
   chars?: number;
   append_only?: boolean;
   trigger_id?: string;

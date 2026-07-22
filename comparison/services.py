@@ -123,8 +123,6 @@ def child_environment(dataset_dir: Path, instance: Instance) -> dict[str, str]:
     environment = os.environ.copy()
     environment.update(
         {
-            # The committed evaluation corpus is review-gated (candidate).
-            "ALLOW_UNREVIEWED_DATASET": "1",
             "DATASET_DIR": str(dataset_dir),
             # Empty values override any .env managed-Qdrant settings and force separate
             # persisted local stores for the two benchmark processes.
@@ -246,7 +244,6 @@ def public_configuration(
     return {
         "dataset_dir": str(dataset_dir),
         "approval_status": contract["approval_status"],
-        "allow_unreviewed_dataset": True,
         "serving_dataset_checksum": contract["serving_dataset_checksum"],
         "openai_api_key_configured": bool(os.getenv("OPENAI_API_KEY")),
         "state_root": str(state_root),

@@ -31,9 +31,7 @@ browser ──► gateway (deployment/modal_app.py, a FastAPI app)
 **State isolation is preserved.** `naive.config` and `stream.config` build separate
 `Settings` with separate default paths (`var/naive/…` vs `var/stream/…`), and
 `shared.api.factory.create_app` is fully parameterized — so both apps live in one
-interpreter without ever sharing an index, a SQLite runtime DB, or a cache. The
-native Rust snapshot module is omitted; `stream/snapshot.py` runs its identical
-pure-Python fallback.
+interpreter without ever sharing an index, a SQLite runtime DB, or a cache.
 
 ## Prerequisites
 
@@ -44,8 +42,8 @@ pure-Python fallback.
   modal secret create streamrag-openai OPENAI_API_KEY="sk-…"
   ```
 
-- The built frontend at `frontend/dist/` (already committed; rebuild with
-  `cd frontend && npm ci && npm run build` if you change the UI).
+- The built frontend at `frontend/dist/` (gitignored; build it first with
+  `cd frontend && npm ci && npm run build`).
 
 ## Commands
 
@@ -84,8 +82,8 @@ re-embedding and are fast.
   budget to cover first-boot indexing.
 
 The locked benchmark config (model `gpt-5.6-sol`, `text-embedding-3-large`,
-reasoning effort `medium`, 3072 dims) is enforced by `Settings.validate()` in the
-app code; the deployment does not override it.
+reasoning effort `medium`, 3072 dims) is hardcoded as fixed constants in
+`shared/config.py`; the deployment does not override it.
 
 ## Verified live
 

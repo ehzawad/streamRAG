@@ -220,7 +220,6 @@ def create_app(
             _dataset_health_state,
             settings,
         )
-        approval_allowed = approval_status == "approved_frozen" or settings.allow_unreviewed_dataset
         indexed_chunks = int(collection.points_count or 0)
         desired_chunks = int(index_metadata["desired_chunks"] or 0)
         index_matches = (
@@ -230,13 +229,12 @@ def create_app(
             and desired_chunks > 0
         )
         return {
-            "ok": approval_allowed and checksums_valid and index_matches,
+            "ok": checksums_valid and index_matches,
             "implementation": implementation,
             "metrics_contract_version": METRICS_CONTRACT_VERSION,
             "supports_snapshots": supports_snapshots,
-            "index_ready": approval_allowed and checksums_valid and index_matches,
+            "index_ready": checksums_valid and index_matches,
             "dataset_status": approval_status,
-            "dataset_approval_allowed": approval_allowed,
             "collection": settings.qdrant_collection,
             "indexed_chunks": indexed_chunks,
             "indexed_desired_chunks": desired_chunks,
@@ -307,7 +305,6 @@ def create_app(
             snapshot = await asyncio.to_thread(
                 require_dataset_snapshot,
                 settings.dataset_dir,
-                settings.allow_unreviewed_dataset,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

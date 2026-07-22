@@ -40,8 +40,6 @@ def sha256_file(path: Path) -> str:
 
 
 def manifest_relative_path(target: Path, manifest_path: Path) -> str:
-    """Store a portable path relative to the adjacent run manifest."""
-
     return Path(os.path.relpath(target.resolve(), start=manifest_path.parent.resolve())).as_posix()
 
 

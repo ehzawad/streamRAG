@@ -9,7 +9,7 @@ from shared.data.vector_store import QdrantVectorStore
 from shared.models import InputSnapshot, SearchResult, Usage
 from shared.query import bounded_retrieval_query
 from stream.config import StreamSettings
-from stream.snapshot import SnapshotAnalyzer
+from stream.snapshot import analyze_delta
 from stream.trigger import ModelTrigger
 
 Send = Callable[[dict], Awaitable[None]]
@@ -181,7 +181,6 @@ class StreamCoordinator:
         settings: StreamSettings,
         send: Send,
         conversation_context: str = "",
-        analyzer: SnapshotAnalyzer | None = None,
         cache_scope: str = "stream",
     ):
         if not cache_scope.strip():
@@ -192,7 +191,6 @@ class StreamCoordinator:
         self.settings = settings
         self.send = send
         self.conversation_context = conversation_context
-        self.analyzer = analyzer or SnapshotAnalyzer()
         self.cache_scope = cache_scope
         self.last_activity_ms = time.perf_counter() * 1000
         self.latest = InputSnapshot(turn_id=turn_id, revision=0, text="")
@@ -461,10 +459,10 @@ class StreamCoordinator:
         )
 
     def _eligible(self, snapshot: InputSnapshot, *, now_ms: float) -> bool:
-        delta = self.analyzer.analyze(self.latest.text, snapshot.text)
+        delta = analyze_delta(self.latest.text, snapshot.text)
         # update() installs snapshot as latest before calling this helper, so use
         # the last dispatched trigger text for the material-change calculation.
-        trigger_delta = self.analyzer.analyze(self.last_trigger_text, snapshot.text)
+        trigger_delta = analyze_delta(self.last_trigger_text, snapshot.text)
         terminal_boundary = has_terminal_boundary(snapshot.text, self.last_trigger_text)
         return (
             delta.word_count >= self.settings.trigger_min_tokens
@@ -483,7 +481,7 @@ class StreamCoordinator:
         self._cancel_quiet_task()
         prior = self.latest.text
         self.last_activity_ms = time.perf_counter() * 1000
-        delta = self.analyzer.analyze(prior, snapshot.text)
+        delta = analyze_delta(prior, snapshot.text)
         self.latest = snapshot
         if prior and not delta.append_only:
             self._cancel_for_correction()
@@ -492,7 +490,6 @@ class StreamCoordinator:
                 "type": "input.ack",
                 "turn_id": self.turn_id,
                 "revision": snapshot.revision,
-                "analyzer": self.analyzer.backend,
                 "chars": len(snapshot.text),
                 "append_only": delta.append_only,
             }

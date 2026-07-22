@@ -318,7 +318,6 @@ function processEvent(
   switch (event.type) {
     case "input.ack": {
       base.extra = {
-        analyzer: event.analyzer ?? null,
         chars: numOrNull(event.chars),
         append_only: boolOrNull(event.append_only),
       };

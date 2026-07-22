@@ -16,7 +16,6 @@ CITATION_MARKER = re.compile(r"\[([^\]\s]+::c\d{4})\]")
 
 
 def citation_markers(text: str) -> list[str]:
-    """Unique citation-shaped markers in first-seen order."""
     return list(dict.fromkeys(CITATION_MARKER.findall(text or "")))
 
 
@@ -40,8 +39,6 @@ def fit_hits_to_budget(hits: Iterable[Hit], token_budget: int) -> list[Hit]:
 
 @dataclass(frozen=True)
 class EvidencePayload:
-    """Rendered evidence text plus the chunk identities that actually fit the budget."""
-
     text: str
     chunk_ids: tuple[str, ...]
     token_estimate: int

@@ -27,7 +27,6 @@ services:
         required: false
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ALLOW_UNREVIEWED_DATASET: ${ALLOW_UNREVIEWED_DATASET:-0}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       QDRANT_URL: http://qdrant-naive:6333
       QDRANT_API_KEY: ""
@@ -76,7 +75,6 @@ services:
         required: false
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ALLOW_UNREVIEWED_DATASET: ${ALLOW_UNREVIEWED_DATASET:-0}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       QDRANT_URL: http://qdrant-stream:6333
       QDRANT_API_KEY: ""

@@ -57,7 +57,6 @@ class EventRegistry:
             return self._channels.get(key)
 
     async def close_and_remove(self, key: str) -> None:
-        """Close a channel and release its buffered events from the registry."""
         async with self._lock:
             channel = self._channels.pop(key, None)
         if channel is not None:

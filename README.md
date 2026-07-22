@@ -25,7 +25,7 @@ Requirements: Docker, `make`, and a real OpenAI API key.
 
 ```bash
 cp .env.example .env
-# Set OPENAI_API_KEY and ALLOW_UNREVIEWED_DATASET=1 in .env.
+# Set OPENAI_API_KEY in .env.
 
 # terminal A
 make docker-up
@@ -38,22 +38,16 @@ Open <http://127.0.0.1:5173/>. Qdrant runs as two private Docker services with
 separate persistent volumes. SQLite is embedded in each API container and stored
 in its own persistent volume; no SQLite server or host installation is required.
 
-## Data and current evidence
+## Data
 
 - Corpus: 250 complete CRAG-derived documents committed as
-  [`data/crag_eval/documents.jsonl.bz2`](data/crag_eval/documents.jsonl.bz2).
+  [`data/crag_eval/documents.jsonl.bz2`](data/crag_eval/documents.jsonl.bz2),
+  checksum-bound; each service verifies the checksums when it loads the dataset.
 - Index: 400-token chunks with 50-token overlap, producing exactly 1,000 Qdrant
   points per path with `text-embedding-3-large`.
 - Evaluation: 5 development questions and 10 held-out test questions, with gold
   answers in [`data/crag_eval/test_gold.jsonl`](data/crag_eval/test_gold.jsonl).
-- Benchmark: one path (`make benchmark` then `make score`) run locally on the
-  committed candidate corpus (`approval_status = candidate_pending_human_review`),
-  loaded with `ALLOW_UNREVIEWED_DATASET=1`. There is no separate sealed/final run.
-
-The committed real-API run completed 20/20 path outputs with no failures. Both
-paths passed the automatic answer, support, and citation checks on all 10 test
-questions. StreamRAG won every first-token race, with a median paired reduction
-of 782 ms (42.1%). This is small-scale local evidence, not a final accuracy claim.
+- `candidate_pending_human_review` means the dataset is proposed but not frozen.
 
 ## Structure
 
@@ -61,31 +55,30 @@ of 782 ms (42.1%). This is small-scale local evidence, not a final accuracy clai
 |---|---|
 | `naive/` | independently runnable post-Send RAG path |
 | `stream/` | independently runnable StreamRAG path for typed input |
-| `native/` | Rust `snapshot_delta` hot path (PyO3), with a Python fallback |
 | `shared/` | only behavior that must be identical across paths |
 | `frontend/` | route hub and browser UI; no benchmark logic |
 | `comparison/` | headless provisioning, replay, scoring, and artifacts |
-| `data/crag_eval/` | committed corpus, questions, gold, checksums, and review sheet |
+| `deployment/` | optional Modal deployment |
+| `data/crag_eval/` | committed corpus, questions, gold, and checksums |
 
 Removing `frontend/` leaves both APIs and the comparison CLI usable. Removing
 `comparison/` leaves both APIs and the frontend usable. Neither RAG path imports
 or calls the other.
 
-StreamRAG's per-draft delta analysis (`SnapshotAnalyzer.analyze`, the pre-Send
-hot path) is implemented in Rust under `native/snapshot_delta/` and loaded through
-an import seam in `stream/snapshot.py`. When the `streamrag_snapshot` wheel is
-absent the identical pure-Python implementation runs instead, so the module is a
-measured speedup, not a dependency. Build it locally with `make native` and prove
-parity plus the microbenchmark with `make bench-native`.
+## Evaluation and deployment boundary
 
-## Documentation
+Gold is not read by either service or by the single benchmark runner.
+The offline scorer reads it only after predictions are finalized and hashed.
+Automatic answer and citation checks are not presented as human semantic accuracy.
+Missing provider usage is marked as a lower bound, never counted as zero.
+The data does not establish a universal speed, accuracy, or cost improvement, and
+results from the StreamRAG paper are not treated as results of this implementation.
 
-- [Dataset and human review](docs/DATASET.md)
-- [Pipeline and architecture](docs/PIPELINE.md)
-- [Run and reproduce](docs/RUN.md)
-- [Benchmark report](docs/BENCHMARK_REPORT.md)
-
-Component-specific commands remain in the README inside each component folder.
+The local stack has no authentication and binds host ports to loopback. Do not
+publish it unchanged: a network deployment needs TLS, identity and authorization,
+rate and spend limits, protected administration, backups, and monitoring.
+Anyone who can reach an API can submit requests, consume OpenAI budget, and read
+results. Changing a bind address alone is not a deployment plan.
 
 ## Verify
 
@@ -95,14 +88,8 @@ make check
 make docker-config
 ```
 
-`make check` runs Python lint (`ruff`) and a production frontend build; the final
-repo ships no pytest suite. The committed corpus is checksum-bound; each service
-verifies those checksums when it loads the dataset, so no separate
-data-verification step is required.
-
-The local stack has no authentication and binds host ports to loopback. Do not
-publish it unchanged: a network deployment needs TLS, identity and authorization,
-rate and spend limits, protected administration, backups, and monitoring.
+`make check` runs Python lint (`ruff`) and a production frontend build. Run and
+reproduction commands are in [docs/RUN.md](docs/RUN.md).
 
 ## Attribution
 
