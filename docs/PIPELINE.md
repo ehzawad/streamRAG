@@ -88,6 +88,65 @@ Questions, history, timestamps, and retrieved text are serialized as untrusted
 user-role content. Privileged instructions remain static. Retrieval evidence is
 turn-local; only conversation text becomes memory.
 
+## Observability, grounding, and debug record
+
+Coordinator turn events are sequence-stamped (`seq`) and actor-tagged
+(`trigger_model`, `coordinator`, or `answer_pipeline`). Trigger and retrieval
+events use stable entity IDs (`trigger-N`, `retrieval-N`); retrieval starts and
+readies record an `origin` (`trigger`, `raw_prefix`, `settled_exact`,
+`direct_commit`), and the newly exposed mutations record reasons. Previously
+silent transitions are additive events: `trigger.cancelled`,
+`trigger.discarded`, `retrieval.cancelled`, `retrieval.kept`,
+`evidence.invalidated`, and `snapshot.coalesced`. Synchronous cancellation
+helpers buffer lifecycle events rather than awaiting sends themselves; the next
+`_emit()` flushes those buffered events (in-memory channel appends) before
+publishing its own event, so the flush cost inside the commit gate is
+microsecond-scale and is itself measured by `fallback_cancel_ms`.
+
+Each successfully completed answer carries a server-computed `grounding`
+object: citation markers extracted from the final answer are matched against
+the chunk IDs that were actually placed in the evidence block (budget-filtered)
+plus tool-returned chunks. Statuses are `cites_supplied_crag`,
+`cites_supplied_crag_with_unmatched_markers`, `only_unmatched_markers`,
+`supplied_crag_not_cited`, and `no_crag_supplied`; failure records instead
+carry a status-only `not_evaluated_incomplete_answer` marker. Unmatched markers
+are additionally split by provenance into
+`unmatched_seen_in_retained_history_chunk_ids` (copied from retained prior
+assistant turns — evidence is turn-local by design, so summarize-style
+follow-ups can legitimately show this) and
+`unmatched_not_seen_in_retained_history_chunk_ids` (malformed or invented, as
+observed once live when a no-evidence probe leaked model deliberation text into
+the visible answer). Neither counts as supplied or matched. This is marker
+provenance only, computed after the answer-completion timestamp; it never
+claims semantic support, adds no model calls, and never rewrites the raw model
+answer. Note also that multi-part questions can exceed the locked 600
+output-token limit; such runs are honestly recorded as failed rather than
+reclassified, because the aggregate limit fires before the final result is
+authoritative.
+
+Context compaction (post-answer, `ConversationSummarySkill.compact`) now
+reports itself: `agent.context_compressed` carries message and token counts
+before and after, and `persistence.context_compaction` is present on every
+record with status `compressed`, `not_needed`, `summary_timeout`,
+`persistence_failed`, `persistence_timeout`, or `unknown`.
+
+The metrics JSONL record is `schema_version` 3 and adds: a `commit` object
+(`branch`, `fallback_reason`, `state_at_commit` including the committed-suffix
+length and cancellation/search phase timings, `inflight_wait` with the shield
+wait), `retrieval_attempts` (every speculative attempt with origin, outcome,
+cache tiers, and offsets from commit), `debug_timeline` (the per-turn event
+timeline as offsets from commit, ring-buffered to the newest 400 entries with
+the dropped count in `debug_timeline_dropped`), `grounding`, cache-tier fields
+(`query_vector_cache_hit`, `search_cache_age_ms`), and stage timings
+(`commit_dispatch_delay_ms`, `session_lease_wait_ms`, `memory_load_ms`,
+`history_message_count`). Runs that fail during committed-text retrieval —
+before any answer work — also write a durable failure record
+(`error.stage: "retrieval"`) carrying whatever commit forensics, attempts, and
+timeline the coordinator accumulated. Suffix and trigger-timeout losses are
+directly represented in a single Stream record; generation-variance losses are
+attributable by comparing the paired path records after excluding retrieval and
+local-stage timings.
+
 ## Fairness and evaluation boundary
 
 Both paths share the dataset, final committed text, chunker, embeddings, search,

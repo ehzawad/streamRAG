@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 
 import {
   cancelTurn,
   commit,
   getServiceTopology,
   type BackendEvent,
+  type ContextCompaction,
+  type Grounding,
   type PathName,
   sendSnapshot,
   type ServiceTopology,
@@ -19,6 +21,17 @@ import {
   startSelectedRuns,
   type AnswerPath,
 } from "./runLifecycle";
+import {
+  initialLifecycleState,
+  lifecycleReducer,
+  type LifecycleState,
+} from "./lifecycle.ts";
+import {
+  CompactionChips,
+  GroundingBadge,
+  LifecycleActivity,
+  LifecycleTimeline,
+} from "./Lifecycle.tsx";
 import { EXPERIENCE_PATHS } from "./routes.ts";
 
 type PanelState = {
@@ -38,6 +51,8 @@ type PanelState = {
   toolCalls: number | null;
   fallbacks: number | null;
   persistenceStatus: string | null;
+  contextCompaction: ContextCompaction | null;
+  grounding: Grounding | null;
 };
 
 type SnapshotJob = {
@@ -55,6 +70,7 @@ type TranscriptAnswer = {
   status: string;
   firstToken: number | null;
   total: number | null;
+  grounding: Grounding | null;
 };
 
 type TranscriptTurn = {
@@ -80,6 +96,8 @@ const emptyPanel = (status: string): PanelState => ({
   toolCalls: null,
   fallbacks: null,
   persistenceStatus: null,
+  contextCompaction: null,
+  grounding: null,
 });
 
 const initialPanels = (mode: PathName): Record<AnswerPath, PanelState> => ({
@@ -103,6 +121,7 @@ const pendingTranscriptAnswer = (): TranscriptAnswer => ({
   status: "Waiting…",
   firstToken: null,
   total: null,
+  grounding: null,
 });
 
 function isProbeReady(topology: ServiceTopology | null, path: AnswerPath): boolean {
@@ -148,9 +167,13 @@ export function App({ mode }: { mode: PathName }) {
   const [topology, setTopology] = useState<ServiceTopology | null>(null);
   const [transportNotice, setTransportNotice] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const [trace, setTrace] = useState<string[]>([]);
   const [panels, setPanels] = useState<Record<AnswerPath, PanelState>>(() => initialPanels(mode));
   const [conversation, setConversation] = useState<TranscriptTurn[]>([]);
+  const [lifecycle, dispatchLifecycle] = useReducer(
+    lifecycleReducer,
+    undefined,
+    initialLifecycleState,
+  );
 
   const sessionIds = useRef(freshIds());
   const turnIds = useRef(freshIds());
@@ -171,6 +194,7 @@ export function App({ mode }: { mode: PathName }) {
   const snapshotAbort = useRef(new AbortController());
   const snapshotEpoch = useRef(0);
   const turnEvents = useRef<EventSource | null>(null);
+  const activeStreamTurn = useRef<string | null>(null);
 
   const runAbort = useRef(freshAbortControllers());
   const runEvents = useRef<Record<AnswerPath, EventSource | null>>({ naive: null, stream: null });
@@ -182,6 +206,7 @@ export function App({ mode }: { mode: PathName }) {
     queuedSnapshot.current = null;
     snapshotDraining.current = false;
     turnEvents.current = null;
+    activeStreamTurn.current = null;
     runEvents.current = { naive: null, stream: null };
     const controller = new AbortController();
     let retry: number | undefined;
@@ -198,7 +223,26 @@ export function App({ mode }: { mode: PathName }) {
     }
 
     void refreshTopology();
+    // Route links are full page loads, so React cleanup never runs on
+    // navigation. pagehide (non-BFCache) is the reliable boundary: abandon the
+    // snapshot pipeline and cancel an open, uncommitted stream turn via the
+    // keepalive DELETE. Once Send has begun (visibleRunFinalized false) the
+    // turn is committed server-side and must NOT be cancelled; the idle reaper
+    // remains the backstop when keepalive delivery fails.
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (event.persisted) return;
+      snapshotAbort.current.abort();
+      queuedSnapshot.current = null;
+      snapshotEpoch.current += 1;
+      if (turnOpened.current.stream && visibleRunFinalized.current) {
+        void cancelTurn("stream", turnIds.current.stream).catch(() => undefined);
+      }
+      turnOpened.current = { naive: false, stream: false };
+    };
+    window.addEventListener("pagehide", onPageHide);
+
     return () => {
+      window.removeEventListener("pagehide", onPageHide);
       controller.abort();
       window.clearTimeout(retry);
       window.clearInterval(timer.current);
@@ -241,83 +285,14 @@ export function App({ mode }: { mode: PathName }) {
   const ready = isModeReady(topology, mode);
   const health = transportNotice ?? topologyLabel(topology, mode);
 
-  function addTrace(event: BackendEvent) {
-    setTrace((current) => [
-      ...current.slice(-39),
-      `${event.type}${event.path ? ` · ${event.path}` : ""}`,
-    ]);
-  }
-
-  function handleTypedEvent(event: BackendEvent) {
-    addTrace(event);
-    if (event.type === "trigger.decision") {
-      setPanels((current) => ({
-        ...current,
-        stream: { ...current.stream, status: `${event.action}${event.query ? `: ${event.query}` : ""}` },
-      }));
-    } else if (event.type === "draft.settled") {
-      setPanels((current) => ({
-        ...current,
-        stream: {
-          ...current.stream,
-          status: event.state === "ready"
-            ? "Exact draft evidence ready — press Send for the grounded answer."
-            : "Draft settled; retrieving exact text before Send…",
-        },
-      }));
-    } else if (event.type === "retrieval.started") {
-      setPanels((current) => ({
-        ...current,
-        stream: {
-          ...current.stream,
-          status: event.candidate
-            ? "Retrieving a completed-prefix candidate…"
-            : "Retrieving before submit…",
-        },
-      }));
-    } else if (event.type === "retrieval.ready") {
-      setPanels((current) => ({
-        ...current,
-        stream: {
-          ...current.stream,
-          status: event.commit_safe_exact
-            ? "Exact draft evidence ready — press Send for the grounded answer."
-            : event.candidate
-              ? "Candidate evidence ready; validating intent…"
-              : "Evidence ready before submit.",
-        },
-      }));
-    } else if (event.type === "retrieval.discarded") {
-      setPanels((current) => ({
-        ...current,
-        stream: { ...current.stream, status: "Stale evidence discarded." },
-      }));
-    } else if (event.type === "retrieval.revalidated") {
-      setPanels((current) => ({
-        ...current,
-        stream: {
-          ...current.stream,
-          status: "Evidence validated and ready — press Send for the grounded answer.",
-        },
-      }));
-    } else if (event.type === "retrieval.reused") {
-      setPanels((current) => ({
-        ...current,
-        stream: {
-          ...current.stream,
-          status: event.ready_before_commit
-            ? "Using evidence ready before Send."
-            : event.retrieval_completed_before_commit
-              ? "Using retrieval ready before Send and revalidated at Send."
-              : "Using speculative retrieval that finished after Send.",
-        },
-      }));
-    } else if (event.type === "retrieval.fallback") {
-      setPanels((current) => ({
-        ...current,
-        stream: { ...current.stream, status: "Retrieving safely at Send…" },
-      }));
-    }
+  // Turn-channel (speculative retrieval) events. The live status is now shown
+  // by the LifecycleActivity strip, so we only fold the event into the reducer.
+  function handleTypedEvent(event: BackendEvent, turnId: string) {
+    dispatchLifecycle({
+      kind: "event",
+      event,
+      ctx: { path: "stream", channel: "turn", turnKey: turnId, scopeId: turnId },
+    });
   }
 
   function finishVisibleRunIfReady() {
@@ -347,6 +322,12 @@ export function App({ mode }: { mode: PathName }) {
       turnIds.current[path] = crypto.randomUUID();
       revisions.current[path] = 0;
     });
+    // Advance the active display turn so any late events from the just-closed
+    // stream turn channel are ignored rather than mis-attributed. Clear the
+    // terminal set so the next typing phase classifies transport errors as
+    // abnormal (reconnect) rather than stale-normal closure.
+    activeStreamTurn.current = turnIds.current.stream;
+    userVisibleTerminalPaths.current.clear();
   }
 
   function updateTranscript(
@@ -368,8 +349,19 @@ export function App({ mode }: { mode: PathName }) {
     path: AnswerPath,
     event: BackendEvent,
     transcriptTurnId: string,
+    turnKey: string,
   ) {
-    addTrace(event);
+    dispatchLifecycle({
+      kind: "event",
+      event,
+      ctx: {
+        path,
+        channel: "run",
+        turnKey,
+        scopeId: event.run_id ?? turnKey,
+        runId: event.run_id,
+      },
+    });
     const wasUserVisibleTerminal = userVisibleTerminalPaths.current.has(path);
     if (event.type === "answer.started") {
       updateTranscript(transcriptTurnId, path, (answer) => ({
@@ -391,6 +383,7 @@ export function App({ mode }: { mode: PathName }) {
         status: "Complete",
         firstToken: event.timing?.submit_to_first_token_ms ?? answer.firstToken,
         total: event.timing?.total_response_ms ?? answer.total,
+        grounding: event.grounding ?? answer.grounding,
       }));
     } else if (event.type === "answer.error" || event.type === "run.error") {
       updateTranscript(transcriptTurnId, path, (answer) => ({
@@ -435,6 +428,8 @@ export function App({ mode }: { mode: PathName }) {
             persistenceStatus: event.type === "answer.ready"
               ? "pending"
               : event.persistence?.status ?? panel.persistenceStatus,
+            contextCompaction: event.persistence?.context_compaction ?? panel.contextCompaction,
+            grounding: event.grounding ?? panel.grounding,
           },
         };
       }
@@ -466,6 +461,7 @@ export function App({ mode }: { mode: PathName }) {
     ) return;
 
     turnOpened.current.stream = true;
+    activeStreamTurn.current = job.turnId;
     const accepted = await sendSnapshot({
       turnId: job.turnId,
       sessionId: job.sessionId,
@@ -475,22 +471,36 @@ export function App({ mode }: { mode: PathName }) {
     });
     setTransportNotice(null);
     if (!turnEvents.current) {
-      turnEvents.current = subscribe(
+      // Turn-event delivery is gated by the captured turn id (not the snapshot
+      // epoch) so commit-time events keep arriving after Send. The backend
+      // closes this channel server-side once the run finishes; after a terminal
+      // run state that closure is normal, not a reconnect.
+      const source = subscribe(
         "stream",
         accepted.events_url,
         (event) => {
-          if (
-            job.epoch === snapshotEpoch.current &&
-            job.turnId === turnIds.current.stream
-          ) handleTypedEvent(event);
+          if (job.turnId === activeStreamTurn.current) handleTypedEvent(event, job.turnId);
         },
-        () => setTransportNotice("Typed-input event stream interrupted; reconnecting…"),
+        () => {
+          // Normal closure only when this subscription's turn is no longer the
+          // active display turn, or the stream answer already reached its
+          // user-visible terminal state. A transient error while the user is
+          // still typing must keep the source open so EventSource reconnects
+          // and the server replays missed events via Last-Event-ID.
+          const closedNormally =
+            job.turnId !== activeStreamTurn.current ||
+            userVisibleTerminalPaths.current.has("stream");
+          if (closedNormally) {
+            source.close();
+            if (turnEvents.current === source) turnEvents.current = null;
+            return;
+          }
+          setTransportNotice("Typed-input event stream interrupted; reconnecting…");
+        },
       );
+      turnEvents.current = source;
     }
-    if (
-      job.epoch === snapshotEpoch.current &&
-      job.turnId === turnIds.current.stream
-    ) lastSnapshotText.current = normalized;
+    if (job.turnId === activeStreamTurn.current) lastSnapshotText.current = normalized;
   }
 
   async function drainSnapshots() {
@@ -543,7 +553,6 @@ export function App({ mode }: { mode: PathName }) {
       selectedImplementations(mode).forEach((path) => {
         displayedRunIds.current[path] = null;
       });
-      setTrace([]);
       setPanels(initialPanels(mode));
     }
   }
@@ -553,6 +562,7 @@ export function App({ mode }: { mode: PathName }) {
     runId: string,
     eventsUrl: string,
     transcriptTurnId: string,
+    turnKey: string,
   ) {
     displayedRunIds.current[path] = runId;
     runEvents.current[path]?.close();
@@ -562,7 +572,7 @@ export function App({ mode }: { mode: PathName }) {
       eventsUrl,
       (event) => {
         if (displayedRunIds.current[path] === runId) {
-          handleRunEvent(path, event, transcriptTurnId);
+          handleRunEvent(path, event, transcriptTurnId, turnKey);
         }
         if (isRunTransportTerminal(event)) {
           transportTerminal = true;
@@ -592,7 +602,6 @@ export function App({ mode }: { mode: PathName }) {
     setTransportNotice(null);
     userVisibleTerminalPaths.current.clear();
     setRunning(true);
-    setTrace([]);
     setPanels({
       naive: emptyPanel(submittedMode === "stream" ? "Not selected" : "Working…"),
       stream: emptyPanel(submittedMode === "naive" ? "Not selected" : "Working…"),
@@ -600,12 +609,13 @@ export function App({ mode }: { mode: PathName }) {
 
     window.clearInterval(timer.current);
     timer.current = undefined;
+    // Stop only the snapshot HTTP pipeline; the snapshotEpoch bump gates
+    // queueSnapshot/snapshot/drainSnapshots. The turn-event channel stays open
+    // so commit-time turn events (revalidated / reused / fallback) still arrive.
     snapshotAbort.current.abort();
     snapshotAbort.current = new AbortController();
     queuedSnapshot.current = null;
     snapshotEpoch.current += 1;
-    turnEvents.current?.close();
-    turnEvents.current = null;
 
     const selected = selectedImplementations(submittedMode);
     const transcriptTurnId = crypto.randomUUID();
@@ -653,7 +663,7 @@ export function App({ mode }: { mode: PathName }) {
         void cancelTurn(path, request.turnId).catch(() => undefined);
         throw new DOMException("superseded request", "AbortError");
       }
-      attachRunEvents(path, accepted.run_id, accepted.events_url, transcriptTurnId);
+      attachRunEvents(path, accepted.run_id, accepted.events_url, transcriptTurnId, request.turnId);
       return accepted;
     });
 
@@ -667,6 +677,7 @@ export function App({ mode }: { mode: PathName }) {
           result.path,
           { type: "run.error", path: result.path, message },
           transcriptTurnId,
+          requests[result.path]?.turnId ?? "",
         );
       }
     });
@@ -679,6 +690,7 @@ export function App({ mode }: { mode: PathName }) {
     editingAfterRun.current = false;
     turnEvents.current?.close();
     turnEvents.current = null;
+    activeStreamTurn.current = null;
     snapshotAbort.current.abort();
     snapshotAbort.current = new AbortController();
     queuedSnapshot.current = null;
@@ -707,9 +719,9 @@ export function App({ mode }: { mode: PathName }) {
     setRunning(false);
     setTransportNotice(null);
     setQuery("");
-    setTrace([]);
     setPanels(initialPanels(mode));
     setConversation([]);
+    dispatchLifecycle({ kind: "reset" });
   }
 
   return (
@@ -743,7 +755,7 @@ export function App({ mode }: { mode: PathName }) {
         <span className={`health ${ready ? "ok" : "warn"}`}>{health}</span>
       </header>
 
-      <ConversationTranscript mode={mode} turns={conversation} />
+      <ConversationTranscript mode={mode} turns={conversation} lifecycle={lifecycle} />
 
       <section className="composer">
         <textarea
@@ -785,6 +797,8 @@ export function App({ mode }: { mode: PathName }) {
         </div>
       </section>
 
+      <LifecycleActivity mode={mode} state={lifecycle} />
+
       {mode === "compare" && <CompareSummary naive={panels.naive} stream={panels.stream} />}
 
       <section className={`results ${mode === "compare" ? "" : "single"}`}>
@@ -796,10 +810,7 @@ export function App({ mode }: { mode: PathName }) {
         )}
       </section>
 
-      <details>
-        <summary>Event trace</summary>
-        <pre>{trace.length ? trace.join("\n") : "No events yet."}</pre>
-      </details>
+      <LifecycleTimeline mode={mode} state={lifecycle} />
     </main>
   );
 }
@@ -807,9 +818,11 @@ export function App({ mode }: { mode: PathName }) {
 function ConversationTranscript({
   mode,
   turns,
+  lifecycle,
 }: {
   mode: PathName;
   turns: TranscriptTurn[];
+  lifecycle: LifecycleState;
 }) {
   if (!turns.length) return null;
   const paths = selectedImplementations(mode);
@@ -817,7 +830,10 @@ function ConversationTranscript({
     <section className="conversation" aria-label="Conversation" aria-live="polite">
       <div className="conversation-head">
         <h2>Conversation</h2>
-        <span>Follow-ups keep this chat&apos;s context.</span>
+        <div className="conversation-head-meta">
+          <CompactionChips mode={mode} state={lifecycle} />
+          <span>Follow-ups keep this chat&apos;s context.</span>
+        </div>
       </div>
       {turns.map((turn) => (
         <article className="chat-turn" key={turn.id}>
@@ -837,7 +853,10 @@ function ConversationTranscript({
                 <div className={`assistant-message ${path}`} key={path}>
                   <div>
                     <small>{path === "naive" ? "Naive RAG" : "StreamRAG"}</small>
-                    <span>{answer.status}</span>
+                    <span className="assistant-status">
+                      <GroundingBadge grounding={answer.grounding} />
+                      {answer.status}
+                    </span>
                   </div>
                   <p className={answer.answer ? "" : "pending-answer"}>
                     {answer.answer || "Waiting for the grounded answer…"}
@@ -908,7 +927,10 @@ function ResultPanel({
     <article className={`panel ${tone}`}>
       <div className="panel-head">
         <h2>{title}</h2>
-        <span>{panel.status}</span>
+        <span className="panel-status">
+          <GroundingBadge grounding={panel.grounding} />
+          {panel.status}
+        </span>
       </div>
       <div className="metrics">
         <Metric label="Path TTFT" value={panel.firstToken === null ? "—" : `${panel.firstToken.toFixed(0)} ms`} />
@@ -919,7 +941,7 @@ function ResultPanel({
         <Metric label="Evidence" value={evidenceLabel(path, panel)} />
         <Metric label="Path cache" value={panel.cacheHit == null ? "—" : panel.cacheHit ? "Hit" : "Miss"} />
         <Metric label="Evidence docs" value={panel.status === "Complete" ? String(visibleSources.length) : "—"} />
-        <Metric label="Persistence" value={persistenceLabel(panel.persistenceStatus)} />
+        <Metric label="Persistence" value={persistenceLabel(panel.persistenceStatus, panel.contextCompaction)} />
         <Metric label="Calls · ctl / ret / tool" value={callBreakdown(panel)} />
         <Metric label="Send fallbacks" value={panel.fallbacks == null ? "—" : String(panel.fallbacks)} />
       </div>
@@ -947,9 +969,16 @@ function uniqueSourceCount(sources: Source[]) {
   return new Set(sources.map((source) => source.url || source.chunk_id)).size;
 }
 
-function persistenceLabel(status: string | null) {
+function persistenceLabel(status: string | null, compaction: ContextCompaction | null) {
   if (status === "pending") return "Finalizing…";
-  if (status === "completed") return "Saved";
+  if (status === "completed") {
+    if (compaction?.status === "compressed") {
+      const after = compaction.message_count_after ?? "?";
+      return `Saved · compressed ${compaction.message_count_before}→${after} msgs`;
+    }
+    if (compaction?.status === "summary_timeout") return "Saved · summary timed out";
+    return "Saved";
+  }
   if (status === "timeout") return "Timed out";
   if (status === "failed") return "Failed";
   return "—";

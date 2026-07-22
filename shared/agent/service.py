@@ -18,9 +18,15 @@ from pydantic_ai import (
     TextPartDelta,
     UsageLimits,
 )
+from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 
-from shared.agent.context import tool_result_json
+from shared.agent.context import (
+    citation_markers,
+    fit_hits_to_budget,
+    token_count,
+    tool_result_json,
+)
 from shared.agent.openai_client import responses_model
 from shared.agent.summary_skill import (
     ConversationSummarySkill,
@@ -47,6 +53,21 @@ Call search_local_crag at most once, only when that evidence cannot answer the
 question and a materially different local-corpus query could recover it.
 search_local_crag never accesses the public internet.
 """
+
+
+def _tool_call_query(args: object) -> str | None:
+    """Best-effort extraction of the model-issued tool query for display only."""
+    parsed = args
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+        except ValueError:
+            return None
+    if isinstance(parsed, dict):
+        query = parsed.get("query")
+        if isinstance(query, str):
+            return query
+    return None
 
 
 @dataclass
@@ -122,6 +143,7 @@ async def execute_local_crag_search(deps: AgentDeps, query: str) -> str:
             elapsed_ms=(time.perf_counter() - started) * 1000,
         )
         raise
+    included = fit_hits_to_budget(result.hits, deps.context_token_budget)
     trace.update(
         {
             "status": "completed",
@@ -132,6 +154,10 @@ async def execute_local_crag_search(deps: AgentDeps, query: str) -> str:
             "ann_ms": result.ann_ms,
             "cache_hit": result.cache_hit,
             "embedding_tokens": result.embedding_tokens,
+            "included_chunk_ids": [hit.chunk.chunk_id for hit in included],
+            "included_token_estimate": sum(
+                hit.chunk.token_count + token_count(hit.chunk.title) + 24 for hit in included
+            ),
             "sources": [
                 {
                     "chunk_id": hit.chunk.chunk_id,
@@ -200,8 +226,11 @@ class GroundedAgent:
         query_time: str,
         cache_scope: str,
     ):
+        lease_requested_ms = time.perf_counter() * 1000
         async with self.sessions.lease(session_key):
+            lease_acquired_ms = time.perf_counter() * 1000
             memory = await self.sessions.load(session_key)
+            memory_loaded_ms = time.perf_counter() * 1000
             tool_traces: list[dict] = []
             deps = AgentDeps(
                 store=self.store,
@@ -250,6 +279,7 @@ class GroundedAgent:
                             "type": "agent.tool_started",
                             "name": event.part.tool_name,
                             "tool_call_id": event.part.tool_call_id,
+                            "query": _tool_call_query(event.part.args),
                         }
                     elif isinstance(event, FunctionToolResultEvent):
                         yield {"type": "agent.tool_completed", "tool_call_id": event.tool_call_id}
@@ -261,6 +291,17 @@ class GroundedAgent:
             streamed = "".join(answer_parts)
             if answer and not streamed:
                 yield {"type": "answer.delta", "text": answer}
+            # Markers cited by PRIOR assistant turns still retained in history.
+            # Grounding uses these to distinguish a memory-copied citation from
+            # a malformed or invented one; they are never counted as supplied.
+            history_markers: list[str] = []
+            for message in memory.messages:
+                if isinstance(message, ModelResponse):
+                    for part in message.parts:
+                        if isinstance(part, TextPart):
+                            for marker in citation_markers(part.content):
+                                if marker not in history_markers:
+                                    history_markers.append(marker)
             append_conversation_turn(memory, question, answer)
             raw_memory = SessionMemory(
                 messages=list(memory.messages),
@@ -280,6 +321,12 @@ class GroundedAgent:
                     "answer": answer,
                     "usage": pydantic_usage(final_result.usage, "grounded_agent"),
                     "tool_traces": tool_traces,
+                    "history_chunk_markers": history_markers,
+                    "stage_timing": {
+                        "session_lease_wait_ms": lease_acquired_ms - lease_requested_ms,
+                        "memory_load_ms": memory_loaded_ms - lease_acquired_ms,
+                        "history_message_count": len(memory.messages) - 2,
+                    },
                 }
                 compression = await self.summary_skill.compact(memory)
                 memory = compression.memory
@@ -310,13 +357,17 @@ class GroundedAgent:
                         raise
                 raise
             if compression.compressed:
-                yield {"type": "agent.context_compressed"}
+                yield {
+                    "type": "agent.context_compressed",
+                    **(compression.stats or {}),
+                }
             yield {
                 "type": "agent.persisted",
                 "usage": compression.usage,
                 "compression_calls": memory.compression_calls,
                 "summary_accounting_complete": compression.accounting_complete,
                 "unpriced_summary_timeout_calls": compression.unpriced_timeout_calls,
+                "context_compaction": compression.stats or {"status": "unknown"},
             }
 
     async def _save_despite_cancellation(

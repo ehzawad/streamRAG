@@ -45,6 +45,15 @@ class PathTelemetry:
     accepted_speculative_completed_ms: float | None = None
     commit_gate_ms: float = 0.0
     reuse_mode: str = "committed_text_retrieval"
+    commit_branch: str = "committed_text"
+    fallback_reason: str | None = None
+    state_at_commit: dict | None = None
+    inflight_wait: dict | None = None
+    retrieval_attempts: list[dict] = field(default_factory=list)
+    timeline: list[dict] = field(default_factory=list)
+    timeline_dropped: int = 0
+    evidence_origin: str | None = None
+    accepted_query: str | None = None
 
 
 class PathTurn(Protocol):

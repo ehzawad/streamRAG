@@ -12,9 +12,12 @@ export const COMMIT_REQUEST_TIMEOUT_MS = 15_000;
 
 export const SSE_EVENT_TYPES = [
   "input.ack",
+  "snapshot.coalesced",
   "draft.settled",
   "trigger.decision",
   "trigger.error",
+  "trigger.cancelled",
+  "trigger.discarded",
   "retrieval.started",
   "retrieval.ready",
   "retrieval.discarded",
@@ -22,6 +25,9 @@ export const SSE_EVENT_TYPES = [
   "retrieval.reused",
   "retrieval.fallback",
   "retrieval.error",
+  "retrieval.cancelled",
+  "retrieval.kept",
+  "evidence.invalidated",
   "answer.started",
   "answer.delta",
   "answer.ready",

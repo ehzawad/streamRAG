@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 
 from pydantic_ai import Agent, ModelMessage, UsageLimits
@@ -42,6 +43,7 @@ class CompressionResult:
     compressed: bool
     accounting_complete: bool = True
     unpriced_timeout_calls: int = 0
+    stats: dict | None = None
 
 
 class ConversationSummarySkill:
@@ -77,11 +79,36 @@ class ConversationSummarySkill:
 
     async def compact(self, memory: SessionMemory) -> CompressionResult:
         rendered = "\n".join(message_text(message) for message in memory.messages)
-        if token_count(rendered) <= self.settings.history_token_budget:
-            return CompressionResult(memory, Usage(), False)
+        message_tokens_before = token_count(rendered)
+        summary_tokens_before = token_count(memory.summary) if memory.summary else 0
+        base_stats = {
+            "message_count_before": len(memory.messages),
+            "message_tokens_before": message_tokens_before,
+            "summary_tokens_before": summary_tokens_before,
+            "context_tokens_before": message_tokens_before + summary_tokens_before,
+            "history_token_budget": self.settings.history_token_budget,
+            "history_keep_turns": self.settings.history_keep_turns,
+            "compression_calls": memory.compression_calls,
+        }
+        if message_tokens_before <= self.settings.history_token_budget:
+            return CompressionResult(
+                memory,
+                Usage(),
+                False,
+                stats={**base_stats, "status": "not_needed", "reason": "within_token_budget"},
+            )
         keep_count = self.settings.history_keep_turns * 2
         if len(memory.messages) <= keep_count:
-            return CompressionResult(memory, Usage(), False)
+            return CompressionResult(
+                memory,
+                Usage(),
+                False,
+                stats={
+                    **base_stats,
+                    "status": "not_needed",
+                    "reason": "insufficient_message_count",
+                },
+            )
         old_messages = memory.messages[:-keep_count]
         recent_messages = memory.messages[-keep_count:]
         transcript = "\n".join(
@@ -90,6 +117,7 @@ class ConversationSummarySkill:
             if message_text(message)
         )
         prompt = f"Previous summary:\n{memory.summary or '(none)'}\n\nOlder turns:\n{transcript}"
+        summary_started = time.perf_counter()
         try:
             async with asyncio.timeout(self.settings.summary_timeout_s):
                 result = await self.agent.run(
@@ -103,16 +131,41 @@ class ConversationSummarySkill:
                 False,
                 accounting_complete=False,
                 unpriced_timeout_calls=1,
+                stats={
+                    **base_stats,
+                    "status": "summary_timeout",
+                    "reason": "history_token_budget_exceeded",
+                    "summary_elapsed_ms": (time.perf_counter() - summary_started) * 1000,
+                },
             )
+        summary_after = str(result.output).strip()
         compacted = SessionMemory(
             messages=recent_messages,
-            summary=str(result.output).strip(),
+            summary=summary_after,
             compression_calls=memory.compression_calls + 1,
         )
+        message_tokens_after = token_count(
+            "\n".join(message_text(message) for message in recent_messages)
+        )
+        summary_tokens_after = token_count(summary_after)
         return CompressionResult(
             memory=compacted,
             usage=pydantic_usage(result.usage, "summary_skill"),
             compressed=True,
+            stats={
+                **base_stats,
+                "status": "compressed",
+                "reason": "history_token_budget_exceeded",
+                "message_count_after": len(recent_messages),
+                "messages_compacted": len(old_messages),
+                "message_tokens_after": message_tokens_after,
+                "summary_tokens_after": summary_tokens_after,
+                "context_tokens_after": message_tokens_after + summary_tokens_after,
+                "summary_chars_after": len(summary_after),
+                "summary_words_after": len(summary_after.split()),
+                "summary_elapsed_ms": (time.perf_counter() - summary_started) * 1000,
+                "compression_calls": memory.compression_calls + 1,
+            },
         )
 
 

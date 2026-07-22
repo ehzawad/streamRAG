@@ -60,6 +60,24 @@ class NaiveRagPath:
         except TimeoutError:
             raise RuntimeError("committed-text retrieval timed out") from None
         completed_ms = time.perf_counter() * 1000
+        attempt = {
+            "retrieval_id": "retrieval-1",
+            "origin": "direct_commit",
+            "query": query[:300],
+            "source_revision": snapshot.revision,
+            "controller_validated": True,
+            "commit_safe_exact": True,
+            "created_ms": started_ms,
+            "search_started_ms": started_ms,
+            "finished_ms": completed_ms,
+            "outcome": "ready",
+            "cache_hit": result.cache_hit,
+            "query_vector_cache_hit": result.query_vector_cache_hit,
+            "search_cache_age_ms": result.search_cache_age_ms,
+            "query_vector_ms": result.query_vector_ms,
+            "ann_ms": result.ann_ms,
+            "embedding_tokens": result.embedding_tokens,
+        }
         return PathTelemetry(
             result=result,
             retrieval_started_ms=started_ms,
@@ -71,6 +89,14 @@ class NaiveRagPath:
             accepted_revision=snapshot.revision,
             accepted_from_fallback=True,
             accepted_ready_before_commit=False,
+            commit_branch="committed_text",
+            retrieval_attempts=[attempt],
+            timeline=[
+                {"t_ms": started_ms, "type": "retrieval.started", "actor": "coordinator"},
+                {"t_ms": completed_ms, "type": "retrieval.ready", "actor": "coordinator"},
+            ],
+            evidence_origin="direct_commit",
+            accepted_query=query,
         )
 
     async def close(self) -> None:

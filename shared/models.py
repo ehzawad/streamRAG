@@ -96,3 +96,5 @@ class SearchResult:
     cache_hit: bool = False
     query_vector_ms: float = 0.0
     ann_ms: float = 0.0
+    query_vector_cache_hit: bool = False
+    search_cache_age_ms: float | None = None

@@ -17,11 +17,17 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     QDRANT_PATH=/app/var/qdrant \
     RUNTIME_DB=/app/var/runtime.sqlite3 \
-    METRICS_LOG=/app/var/requests.jsonl
+    METRICS_LOG=/app/var/requests.jsonl \
+    TIKTOKEN_CACHE_DIR=/opt/tiktoken
 
 WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./
 RUN uv sync --frozen --no-dev --no-install-project
+
+# Bake the tokenizer into the image: tiktoken otherwise downloads cl100k_base
+# at import time with no timeout, so one stalled connection at container start
+# hangs the service forever (observed live). /opt is outside the volume mounts.
+RUN /app/.venv/bin/python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 
 COPY shared ./shared
 COPY stream ./stream
