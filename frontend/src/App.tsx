@@ -195,6 +195,28 @@ export function App({ mode }: { mode: PathName }) {
   const snapshotEpoch = useRef(0);
   const turnEvents = useRef<EventSource | null>(null);
   const activeStreamTurn = useRef<string | null>(null);
+  // A dropped SSE stream fires onerror even on a normal end-of-turn close, and a
+  // reconnect to a finished turn 404s (so onopen never comes). To avoid a banner
+  // flashing on every normal close — especially through a proxy, where the
+  // terminal event can trail the channel close by a few ms — defer the notice
+  // and only show it if the stream is still abnormal after this grace window.
+  const transportNoticeTimer = useRef<number | undefined>(undefined);
+  const clearTransportNotice = () => {
+    if (transportNoticeTimer.current !== undefined) {
+      window.clearTimeout(transportNoticeTimer.current);
+      transportNoticeTimer.current = undefined;
+    }
+    setTransportNotice(null);
+  };
+  const scheduleTransportNotice = (resolve: () => string | null) => {
+    if (transportNoticeTimer.current !== undefined) {
+      window.clearTimeout(transportNoticeTimer.current);
+    }
+    transportNoticeTimer.current = window.setTimeout(() => {
+      transportNoticeTimer.current = undefined;
+      setTransportNotice(resolve());
+    }, 1500);
+  };
 
   const runAbort = useRef(freshAbortControllers());
   const runEvents = useRef<Record<AnswerPath, EventSource | null>>({ naive: null, stream: null });
@@ -469,7 +491,7 @@ export function App({ mode }: { mode: PathName }) {
       text: normalized,
       signal: job.signal,
     });
-    setTransportNotice(null);
+    clearTransportNotice();
     if (!turnEvents.current) {
       // Turn-event delivery is gated by the captured turn id (not the snapshot
       // epoch) so commit-time events keep arriving after Send. The backend
@@ -487,15 +509,25 @@ export function App({ mode }: { mode: PathName }) {
           // user-visible terminal state. A transient error while the user is
           // still typing must keep the source open so EventSource reconnects
           // and the server replays missed events via Last-Event-ID.
-          const closedNormally =
-            job.turnId !== activeStreamTurn.current ||
-            userVisibleTerminalPaths.current.has("stream");
-          if (closedNormally) {
+          const finalizeIfNormal = () => {
+            const closedNormally =
+              job.turnId !== activeStreamTurn.current ||
+              userVisibleTerminalPaths.current.has("stream");
+            if (!closedNormally) return false;
             source.close();
             if (turnEvents.current === source) turnEvents.current = null;
-            return;
-          }
-          setTransportNotice("Typed-input event stream interrupted; reconnecting…");
+            return true;
+          };
+          if (finalizeIfNormal()) return;
+          // Not settled yet — but the terminal event can trail the channel close
+          // by a few ms (more so through a proxy). Defer and re-check; if the
+          // stream has since settled, suppress the notice so a normal
+          // end-of-turn close shows nothing.
+          scheduleTransportNotice(() =>
+            finalizeIfNormal()
+              ? null
+              : "Typed-input event stream interrupted; reconnecting…",
+          );
         },
       );
       turnEvents.current = source;
@@ -514,6 +546,7 @@ export function App({ mode }: { mode: PathName }) {
           await snapshot(job);
         } catch (error) {
           if (error instanceof Error && error.name !== "AbortError") {
+            clearTransportNotice();
             setTransportNotice(error.message);
           }
         }
@@ -582,8 +615,17 @@ export function App({ mode }: { mode: PathName }) {
       },
       () => {
         if (transportTerminal) return;
-        if (displayedRunIds.current[path] !== runId) source.close();
-        else setTransportNotice(`${path} answer event stream interrupted; reconnecting…`);
+        const settleIfDone = () => {
+          if (!transportTerminal && displayedRunIds.current[path] === runId) return false;
+          source.close();
+          return true;
+        };
+        if (settleIfDone()) return;
+        // Defer; a normal run completion may land its terminal event just after
+        // the channel closes, so re-check and suppress the notice if so.
+        scheduleTransportNotice(() =>
+          settleIfDone() ? null : `${path} answer event stream interrupted; reconnecting…`,
+        );
       },
     );
     runEvents.current[path] = source;
@@ -599,7 +641,7 @@ export function App({ mode }: { mode: PathName }) {
     activeMode.current = submittedMode;
     visibleRunFinalized.current = false;
     editingAfterRun.current = false;
-    setTransportNotice(null);
+    clearTransportNotice();
     userVisibleTerminalPaths.current.clear();
     setRunning(true);
     setPanels({
@@ -717,7 +759,7 @@ export function App({ mode }: { mode: PathName }) {
     lastSnapshotText.current = "";
     lastQueuedText.current = "";
     setRunning(false);
-    setTransportNotice(null);
+    clearTransportNotice();
     setQuery("");
     setPanels(initialPanels(mode));
     setConversation([]);
