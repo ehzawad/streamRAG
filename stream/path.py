@@ -8,7 +8,6 @@ from shared.path import EventSink, PathTelemetry, PathTurn, cache_scope
 from stream.config import StreamSettings
 from stream.coordinator import StreamCoordinator, StreamMetrics
 from stream.evaluation import EVALUATION_METRICS
-from stream.snapshot import SnapshotAnalyzer
 from stream.trigger import ModelTrigger
 
 
@@ -28,8 +27,6 @@ def reuse_mode(metrics: StreamMetrics, committed_ms: float) -> str:
 
 
 class StreamRagPath:
-    """Path B: correction-safe speculative retrieval over typed snapshots."""
-
     name = "stream"
     supports_snapshots = True
     evaluation_metrics = EVALUATION_METRICS
@@ -62,7 +59,6 @@ class StreamRagPath:
             settings=self.settings,
             send=send,
             conversation_context=conversation_context,
-            analyzer=SnapshotAnalyzer(),
             cache_scope=cache_scope(session_id or turn_id, self.name),
         )
 

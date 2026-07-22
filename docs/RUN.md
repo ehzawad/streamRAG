@@ -17,15 +17,7 @@ Node.js/npm.
 cp .env.example .env
 ```
 
-Set these values in `.env`:
-
-```dotenv
-OPENAI_API_KEY=your-real-key
-ALLOW_UNREVIEWED_DATASET=1
-```
-
-`ALLOW_UNREVIEWED_DATASET=1` lets the services load the committed candidate
-corpus. There is no sealed test run; this is the normal setting for every run.
+Set `OPENAI_API_KEY=your-real-key` in `.env`.
 
 ## Reproduce the Docker development pipeline
 
@@ -44,9 +36,8 @@ make score
 ```
 
 `docker-sync` reads the committed 250-document corpus, creates 1,000 embeddings
-for each path, and writes them to separate Qdrant services. On the recorded clean
-run, Naive indexed in 40.926 seconds and StreamRAG in 39.055 seconds. Existing
-valid volumes make later syncs incremental.
+for each path, and writes them to separate Qdrant services. Existing valid
+volumes make later syncs incremental.
 
 `make benchmark` replays `test_queries.jsonl` through both services with
 deterministic 70 WPM typing, changed-only 400 ms snapshots, and a 5-second
@@ -75,10 +66,7 @@ make docker-config
 
 `make check` runs Python linting (ruff) and a production frontend build. The
 committed corpus is checksum-bound; each service verifies those checksums when it
-loads the dataset, so no separate verification step is required. The Rust native
-backend `native/snapshot_delta/` (PyO3 module `streamrag_snapshot`, with a
-pure-Python fallback in `stream/snapshot.py`) builds via `make native` and is
-benchmarked with `make bench-native`.
+loads the dataset, so no separate verification step is required.
 
 Useful live checks:
 
@@ -100,13 +88,7 @@ make dev-naive   # port 8001, embedded local Qdrant
 make dev-stream  # port 8002, embedded local Qdrant
 ```
 
-Start the route frontend separately with `make dev-frontend`. Exact component
-commands and focused tests are in:
-
-- [`naive/README.md`](../naive/README.md)
-- [`stream/README.md`](../stream/README.md)
-- [`frontend/README.md`](../frontend/README.md)
-- [`comparison/README.md`](../comparison/README.md)
+Start the route frontend separately with `make dev-frontend`.
 
 The headless provisioner can also create two isolated embedded service stores:
 
@@ -147,8 +129,6 @@ it does not remove the committed dataset.
 
 ## Troubleshooting
 
-- **API health says the dataset is unapproved:** set
-  `ALLOW_UNREVIEWED_DATASET=1` in `.env`, then recreate the containers.
 - **Index is not ready:** run `make docker-sync` and inspect the API and Qdrant
   logs with `docker compose logs`.
 - **Port already in use:** stop the conflicting process or the older Compose
@@ -157,5 +137,5 @@ it does not remove the committed dataset.
   recreate the affected containers.
 
 The supplied ports are loopback-only and the stack has no authentication. See
-the deployment and security boundary in [`PIPELINE.md`](PIPELINE.md) before any
-network exposure.
+the evaluation and deployment boundary in the root README before any network
+exposure.

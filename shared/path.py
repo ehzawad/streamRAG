@@ -12,8 +12,6 @@ METRICS_CONTRACT_VERSION = 1
 
 @dataclass
 class PathTelemetry:
-    """Common result envelope consumed by the shared answer lifecycle."""
-
     result: SearchResult
     retrieval_started_ms: float
     retrieval_ready_ms: float

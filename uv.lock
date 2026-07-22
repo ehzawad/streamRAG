@@ -455,7 +455,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "1.107.1"
+version = "2.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "genai-prices" },
@@ -466,9 +466,9 @@ dependencies = [
     { name = "pydantic-graph" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d5/a5/e4a515a5eaa2cef746356e69e706e6cfa4575d1065652b226104db693877/pydantic_ai_slim-1.107.1.tar.gz", hash = "sha256:c4c86aae407e62ea720e8911627219f34f60668dc4c35fdead5ad026efdd00fc", size = 780236, upload-time = "2026-07-11T03:22:16.105Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/bc/65fabea030e6b40c04b25b7069b559ff5cabea6e7cadf640839ceeb08af6/pydantic_ai_slim-2.15.0.tar.gz", hash = "sha256:29d804b6caf582337f4e99f98ba4f4bf0b9e164761429daa87c392a176315e20", size = 879375, upload-time = "2026-07-22T03:59:19.447Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/92/26/a9f8761ce3789a67c930d2d93742a2c10382a6d1fe99fba0aa67430c7786/pydantic_ai_slim-1.107.1-py3-none-any.whl", hash = "sha256:8eade1c9a1bbdf19c06b4fba9424980b0f446ef2756d2559cc819971ec35cc8f", size = 964387, upload-time = "2026-07-11T03:22:09.178Z" },
+    { url = "https://files.pythonhosted.org/packages/66/d9/28a6010b1d1937fc5c0fa1516d8a7e05d871920269e1dedd28db3c138195/pydantic_ai_slim-2.15.0-py3-none-any.whl", hash = "sha256:758f9cf5bf1c7e83bf4e7459e71006a3d5da46443416f71281fea202365ce7a7", size = 1066704, upload-time = "2026-07-22T03:59:12.047Z" },
 ]
 
 [package.optional-dependencies]
@@ -520,7 +520,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "1.107.1"
+version = "2.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -528,9 +528,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b9/d0/b10720e987f433d63af6cba046554f84cf20aee696209a90af6d6769b385/pydantic_graph-1.107.1.tar.gz", hash = "sha256:c83b255a67b1e64e460749a61195309738f42895ad5b93da2140d6bff76b14f1", size = 62563, upload-time = "2026-07-11T03:22:18.404Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6a/39/f56cfeb84754b07470c4149bdc2f242308c057975d51ca1d1695a58f36c3/pydantic_graph-2.15.0.tar.gz", hash = "sha256:3cc82597ed9bfff4806e5c5105bc64e6e627924a21933962e4d8a3aebe25bc6d", size = 43934, upload-time = "2026-07-22T03:59:21.684Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dd/f0/27537e7c7df3dcca6b8ad2bff9a35c6a4f1b4e76d21cd6c6ab931d7ef0bc/pydantic_graph-1.107.1-py3-none-any.whl", hash = "sha256:b5893249b7fc1dc2e60dfc40a08ccd4cc0d1dd6e05aeeee2a50392c5663eac60", size = 80106, upload-time = "2026-07-11T03:22:12.083Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/b6/6d6360afbc91b9430abe7f50266f2f0b78fcfc55a88b5681618948d60ab1/pydantic_graph-2.15.0-py3-none-any.whl", hash = "sha256:ed5b3fa18dccea9cef95a09fbbf087e49d9e244f11376ee0454d8f89059a95e6", size = 51660, upload-time = "2026-07-22T03:59:15.108Z" },
 ]
 
 [[package]]
@@ -687,15 +687,15 @@ wheels = [
 
 [[package]]
 name = "sse-starlette"
-version = "3.4.5"
+version = "3.4.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "starlette" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d2/1b/bc9e3e7a72dcdad7dc7888758f5d00f56f8909ed5cfdff822bd72bb4c520/sse_starlette-3.4.5.tar.gz", hash = "sha256:83072538bc211a2f68b7b0422226c4af3e9b62e106e07034664b832ca019842a", size = 35249, upload-time = "2026-06-20T17:36:58.322Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6c/10/a34c656829ffc1c4b22ef36d70d9ebb6b99c020e2aeb17cee5485099f028/sse_starlette-3.4.6.tar.gz", hash = "sha256:725f8a1bd6d26ae1b2c9610c0ef5065dfdd496f3988d28adcf8c4b49dc25c627", size = 32542, upload-time = "2026-07-20T14:16:32.201Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/78/75/c88d3f5dafd59c791da1ce27650d30bf5b70cbf1cbf01cd00e5f9e360915/sse_starlette-3.4.5-py3-none-any.whl", hash = "sha256:e71bad53323f65573c3864a6c3bd0c1eb6e5f092b2e48082b0c35927d19ca296", size = 16518, upload-time = "2026-06-20T17:36:56.729Z" },
+    { url = "https://files.pythonhosted.org/packages/49/36/e10c1d1b7ca881d2625db2ec28508578499187bb1c389952c398474e1834/sse_starlette-3.4.6-py3-none-any.whl", hash = "sha256:56217ab4c9a9f9c5db7b21e08732d3e7c2b807f45231ad23de0551a24c4a41f6", size = 16516, upload-time = "2026-07-20T14:16:30.978Z" },
 ]
 
 [[package]]
@@ -736,22 +736,22 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.20,<1" },
-    { name = "fastapi", specifier = ">=0.115,<1" },
-    { name = "httpx", specifier = ">=0.28,<1" },
-    { name = "numpy", specifier = ">=2.0,<3" },
-    { name = "openai", specifier = ">=2.20,<3" },
-    { name = "pydantic", specifier = ">=2.10,<3" },
-    { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=1.0,<2" },
-    { name = "python-dotenv", specifier = ">=1.0,<2" },
-    { name = "qdrant-client", specifier = ">=1.15,<2" },
-    { name = "sse-starlette", specifier = ">=3.0,<4" },
-    { name = "tiktoken", specifier = ">=0.9,<1" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
+    { name = "aiosqlite", specifier = "==0.22.1" },
+    { name = "fastapi", specifier = "==0.139.2" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "numpy", specifier = "==2.5.1" },
+    { name = "openai", specifier = "==2.46.0" },
+    { name = "pydantic", specifier = "==2.13.4" },
+    { name = "pydantic-ai-slim", extras = ["openai"], specifier = "==2.15.0" },
+    { name = "python-dotenv", specifier = "==1.2.2" },
+    { name = "qdrant-client", specifier = "==1.18.0" },
+    { name = "sse-starlette", specifier = "==3.4.6" },
+    { name = "tiktoken", specifier = "==0.13.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = "==0.51.0" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = ">=0.11,<1" }]
+dev = [{ name = "ruff", specifier = "==0.15.22" }]
 
 [[package]]
 name = "tiktoken"

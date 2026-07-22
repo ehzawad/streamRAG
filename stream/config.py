@@ -4,26 +4,24 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from shared.config import ROOT, Settings, env_bool
+from shared.config import ROOT, Settings
 
 
 @dataclass(frozen=True)
 class StreamSettings(Settings):
-    trigger_reasoning_effort: str = os.getenv("TRIGGER_REASONING_EFFORT", "low")
-    trigger_min_tokens: int = int(os.getenv("TRIGGER_MIN_TOKENS", "5"))
-    trigger_min_new_tokens: int = int(os.getenv("TRIGGER_MIN_NEW_TOKENS", "3"))
-    trigger_interval_ms: int = int(os.getenv("TRIGGER_INTERVAL_MS", "500"))
-    trigger_max_presubmit_calls: int = int(os.getenv("TRIGGER_MAX_PRESUBMIT_CALLS", "4"))
-    parallel_raw_retrieval: bool = env_bool("PARALLEL_RAW_RETRIEVAL", True)
-    settled_draft_delay_ms: int = int(os.getenv("SETTLED_DRAFT_DELAY_MS", "500"))
+    # Fixed StreamRAG scheduling contract; not runtime-configurable.
+    trigger_reasoning_effort: str = "low"
+    trigger_min_tokens: int = 5
+    trigger_min_new_tokens: int = 3
+    trigger_interval_ms: int = 500
+    trigger_max_presubmit_calls: int = 4
+    parallel_raw_retrieval: bool = True
+    settled_draft_delay_ms: int = 500
+
     trigger_timeout_s: float = float(os.getenv("TRIGGER_TIMEOUT_S", "4.0"))
 
     def validate(self) -> None:
         super().validate()
-        if self.trigger_reasoning_effort != "low":
-            raise ValueError("the locked streaming trigger requires reasoning effort 'low'")
-        if self.settled_draft_delay_ms != 500:
-            raise ValueError("the locked StreamRAG configuration requires 500 ms draft settling")
         if self.trigger_timeout_s <= 0:
             raise ValueError("TRIGGER_TIMEOUT_S must be positive")
 

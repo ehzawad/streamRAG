@@ -12,8 +12,6 @@ from shared.query import bounded_retrieval_query
 
 
 class NaiveRagPath:
-    """Path A: exact committed-text retrieval begins only after Send."""
-
     name = "naive"
     supports_snapshots = False
     evaluation_metrics = EVALUATION_METRICS

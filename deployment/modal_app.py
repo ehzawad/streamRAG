@@ -46,22 +46,20 @@ VAR_DIR = "/app/var"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
 
-# Runtime dependencies, verbatim from the project's pyproject.toml. The native
-# Rust snapshot module is intentionally omitted: stream/snapshot.py falls back to
-# an identical pure-Python implementation when the wheel is absent.
+# Runtime dependencies, verbatim from the project's pyproject.toml.
 PY_DEPS = [
-    "fastapi>=0.115,<1",
-    "uvicorn[standard]>=0.34,<1",
-    "openai>=2.20,<3",
-    "pydantic-ai-slim[openai]>=1.0,<2",
-    "qdrant-client>=1.15,<2",
-    "numpy>=2.0,<3",
-    "pydantic>=2.10,<3",
-    "python-dotenv>=1.0,<2",
-    "tiktoken>=0.9,<1",
-    "aiosqlite>=0.20,<1",
-    "sse-starlette>=3.0,<4",
-    "httpx>=0.28,<1",
+    "fastapi==0.139.2",
+    "uvicorn[standard]==0.51.0",
+    "openai==2.46.0",
+    "pydantic-ai-slim[openai]==2.15.0",
+    "qdrant-client==1.18.0",
+    "numpy==2.5.1",
+    "pydantic==2.13.4",
+    "python-dotenv==1.2.2",
+    "tiktoken==0.13.0",
+    "aiosqlite==0.22.1",
+    "sse-starlette==3.4.6",
+    "httpx==0.28.1",
 ]
 
 # The code uses Python 3.14-only grammar (bare multi-exception `except A, B:`),
@@ -76,9 +74,6 @@ image = (
             "UV_SYSTEM_PYTHON": "1",
             "PYTHONUNBUFFERED": "1",
             "PYTHONPATH": "/app",
-            # The committed corpus is a review-gated candidate; this is the
-            # project's normal "load it anyway" flag (see docs/RUN.md).
-            "ALLOW_UNREVIEWED_DATASET": "1",
         }
     )
     .run_commands("uv pip install --system " + " ".join(f'"{d}"' for d in PY_DEPS))
@@ -187,10 +182,9 @@ def probe() -> str:
 
     import naive.api  # noqa: F401
     import stream.api  # noqa: F401
-    from stream.snapshot import SnapshotAnalyzer
 
     return (
-        f"python={sys.version.split()[0]} snapshot_backend={SnapshotAnalyzer.backend} "
+        f"python={sys.version.split()[0]} "
         f"naive={naive.api.app.title!r} stream={stream.api.app.title!r}"
     )
 

@@ -56,7 +56,6 @@ class ConversationSummarySkill:
         )
         model_settings = OpenAIResponsesModelSettings(
             openai_reasoning_effort=settings.summary_reasoning_effort,
-            openai_reasoning_mode="standard",
             openai_service_tier=settings.openai_service_tier,
             openai_store=False,
             openai_text_verbosity="low",

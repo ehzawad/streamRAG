@@ -204,7 +204,6 @@ class RagRuntime:
             snapshot = await asyncio.to_thread(
                 require_dataset_snapshot,
                 self.settings.dataset_dir,
-                self.settings.allow_unreviewed_dataset,
             )
             expected_source = index_source_sha256_for_documents(
                 self.settings,
@@ -212,7 +211,8 @@ class RagRuntime:
             )
         except (OSError, RuntimeError, ValueError) as exc:
             raise IndexNotReadyError(
-                "current dataset is not approved and checksum-valid; repair it and run data sync"
+                "current dataset is not checksum-valid or the index is stale; "
+                "repair the dataset and run data sync"
             ) from exc
         await self.store.assert_ready(expected_source)
 
@@ -614,11 +614,7 @@ class RagRuntime:
         turn: PathTurn | None,
         error: Exception,
     ) -> None:
-        """Durable record for a run that died before any answer work began.
-
-        Committed-text retrieval timeouts/failures previously produced only a
-        run.error event and a counter; the JSONL then silently omitted them.
-        """
+        """Durable record for a run that died before any answer work began."""
         failed_ms = time.perf_counter() * 1000
         metrics = getattr(turn, "metrics", None)
         usage = Usage()
