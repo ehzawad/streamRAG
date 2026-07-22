@@ -7,6 +7,63 @@ import {
 
 export type PathName = AnswerPath | "compare";
 
+export type Actor = "trigger_model" | "coordinator" | "answer_pipeline";
+
+export type Grounding = {
+  schema_version?: number;
+  status:
+    | "cites_supplied_crag"
+    | "cites_supplied_crag_with_unmatched_markers"
+    | "only_unmatched_markers"
+    | "supplied_crag_not_cited"
+    | "no_crag_supplied";
+  has_citation_to_supplied_chunk: boolean;
+  citation_marker_occurrences: number;
+  cited_chunk_ids: string[];
+  matched_chunk_ids: string[];
+  unmatched_chunk_ids: string[];
+  supplied_pre_retrieved_chunk_ids: string[];
+  supplied_tool_chunk_ids: string[];
+  matched_pre_retrieved_chunk_ids?: string[];
+  matched_tool_chunk_ids?: string[];
+  unmatched_seen_in_retained_history_chunk_ids?: string[];
+  unmatched_not_seen_in_retained_history_chunk_ids?: string[];
+  evidence_token_estimate: { pre_retrieved: number; tool_returned: number; total: number };
+  search_local_crag: { attempts: number; completed: number; returned_chunk_count: number };
+};
+
+// Only `status` is guaranteed: persistence_failed / persistence_timeout /
+// unknown payloads are status-only, and summary_timeout carries no after-fields.
+export type ContextCompaction = {
+  status:
+    | "compressed"
+    | "not_needed"
+    | "summary_timeout"
+    | "persistence_failed"
+    | "persistence_timeout"
+    | "unknown";
+  reason?: string;
+  message_count_before?: number;
+  message_count_after?: number;
+  messages_compacted?: number;
+  context_tokens_before?: number;
+  context_tokens_after?: number;
+  summary_tokens_before?: number;
+  summary_tokens_after?: number;
+  summary_chars_after?: number;
+  summary_elapsed_ms?: number;
+  compression_calls?: number;
+  history_token_budget?: number;
+  history_keep_turns?: number;
+};
+
+export type AnswerCommit = {
+  branch: "exact_evidence" | "inflight_wait_promoted" | "fallback" | "committed_text";
+  fallback_reason: string | null;
+  state_at_commit: Record<string, unknown> | null;
+  inflight_wait: Record<string, unknown> | null;
+};
+
 export type BackendEvent = {
   type: string;
   run_id?: string;
@@ -18,6 +75,44 @@ export type BackendEvent = {
   query?: string | null;
   message?: string;
   sources?: Source[];
+  // SSE channel + entity envelope (present on turn-channel events, and sequence on all).
+  sequence?: number;
+  seq?: number;
+  actor?: Actor;
+  turn_id?: string;
+  revision?: number;
+  analyzer?: string;
+  chars?: number;
+  append_only?: boolean;
+  trigger_id?: string;
+  retrieval_id?: string;
+  evidence_id?: string;
+  origin?: "trigger" | "raw_prefix" | "settled_exact" | "direct_commit";
+  reason?: string;
+  candidate_query?: string | null;
+  candidate_query_compatible?: boolean;
+  search_query?: string;
+  from_revision?: number;
+  to_revision?: number;
+  hits?: number;
+  elapsed_ms?: number;
+  cache_hit?: boolean;
+  search_cache_hit?: boolean;
+  replacement_retrieval_id?: string;
+  // Run-channel enrichments.
+  accepted_query?: string;
+  evidence_origin?: string;
+  grounding?: Grounding;
+  commit?: AnswerCommit;
+  // Enriched agent.context_compressed fields.
+  message_count_before?: number;
+  message_count_after?: number;
+  messages_compacted?: number;
+  context_tokens_before?: number;
+  context_tokens_after?: number;
+  summary_tokens_after?: number;
+  summary_elapsed_ms?: number;
+  compression_calls?: number;
   timing?: {
     submit_to_first_token_ms: number | null;
     total_response_ms: number;
@@ -49,6 +144,7 @@ export type BackendEvent = {
   persistence?: {
     status: string;
     elapsed_ms: number | null;
+    context_compaction?: ContextCompaction;
   };
 };
 

@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 
-from shared.agent.context import evidence_block
+from shared.agent.context import CITATION_MARKER, EvidencePayload, evidence_payload
 from shared.agent.service import GroundedAgent
 from shared.api.events import EventRegistry
 from shared.api.schemas import CommitRequest, SnapshotRequest
@@ -26,6 +26,109 @@ from shared.path import PathTelemetry, PathTurn, RagPath, cache_scope
 TERMINAL_TURN_LIMIT = 4096
 TURN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 logger = logging.getLogger(__name__)
+
+
+def grounding_facts(
+    answer: str,
+    evidence: EvidencePayload,
+    tool_traces: list[dict],
+    history_markers: list[str] | None = None,
+) -> dict:
+    """Marker-match provenance only; never a claim of semantic support."""
+    supplied_tool_ids: list[str] = []
+    tool_tokens = 0
+    tool_completed = 0
+    tool_returned = 0
+    for trace in tool_traces:
+        if trace.get("status") == "completed":
+            tool_completed += 1
+        included = trace.get("included_chunk_ids") or []
+        tool_returned += len(included)
+        tool_tokens += int(trace.get("included_token_estimate") or 0)
+        for chunk_id in included:
+            if chunk_id not in supplied_tool_ids:
+                supplied_tool_ids.append(chunk_id)
+    markers = CITATION_MARKER.findall(answer or "")
+    cited = list(dict.fromkeys(markers))
+    supplied = set(evidence.chunk_ids) | set(supplied_tool_ids)
+    matched = [chunk_id for chunk_id in cited if chunk_id in supplied]
+    unmatched = [chunk_id for chunk_id in cited if chunk_id not in supplied]
+    # Provenance split only: a marker copied from retained prior assistant text
+    # is a different symptom than a malformed or invented one. Neither counts
+    # as supplied or matched for this turn.
+    retained_history = set(history_markers or [])
+    unmatched_seen_in_history = [m for m in unmatched if m in retained_history]
+    unmatched_not_seen = [m for m in unmatched if m not in retained_history]
+    if matched and not unmatched:
+        status = "cites_supplied_crag"
+    elif matched:
+        status = "cites_supplied_crag_with_unmatched_markers"
+    elif cited:
+        status = "only_unmatched_markers"
+    elif supplied:
+        status = "supplied_crag_not_cited"
+    else:
+        status = "no_crag_supplied"
+    return {
+        "schema_version": 1,
+        "status": status,
+        "has_citation_to_supplied_chunk": bool(matched),
+        "citation_marker_occurrences": len(markers),
+        "cited_chunk_ids": cited,
+        "matched_chunk_ids": matched,
+        "unmatched_chunk_ids": unmatched,
+        "unmatched_seen_in_retained_history_chunk_ids": unmatched_seen_in_history,
+        "unmatched_not_seen_in_retained_history_chunk_ids": unmatched_not_seen,
+        "supplied_pre_retrieved_chunk_ids": list(evidence.chunk_ids),
+        "supplied_tool_chunk_ids": supplied_tool_ids,
+        "matched_pre_retrieved_chunk_ids": [
+            chunk_id for chunk_id in matched if chunk_id in set(evidence.chunk_ids)
+        ],
+        "matched_tool_chunk_ids": [
+            chunk_id for chunk_id in matched if chunk_id in set(supplied_tool_ids)
+        ],
+        "evidence_token_estimate": {
+            "method": "fit_hits_to_budget_v1",
+            "tokenizer": "cl100k_base",
+            "pre_retrieved": evidence.token_estimate,
+            "tool_returned": tool_tokens,
+            "total": evidence.token_estimate + tool_tokens,
+        },
+        "search_local_crag": {
+            "attempts": len(tool_traces),
+            "completed": tool_completed,
+            "returned_chunk_count": tool_returned,
+        },
+    }
+
+
+def _offset_timeline(entries: list[dict], committed_ms: float) -> list[dict]:
+    converted = []
+    for entry in entries:
+        item = {
+            key: value
+            for key, value in entry.items()
+            if key != "t_ms"
+        }
+        t_ms = entry.get("t_ms")
+        if isinstance(t_ms, int | float):
+            item["offset_from_commit_ms"] = round(t_ms - committed_ms, 2)
+        converted.append(item)
+    return converted
+
+
+def _offset_attempts(attempts: list[dict], committed_ms: float) -> list[dict]:
+    converted = []
+    for attempt in attempts:
+        item = dict(attempt)
+        for key in ("created_ms", "search_started_ms", "finished_ms"):
+            value = item.pop(key, None)
+            if isinstance(value, int | float):
+                item[key.replace("_ms", "_offset_from_commit_ms")] = round(
+                    value - committed_ms, 2
+                )
+        converted.append(item)
+    return converted
 
 
 @dataclass
@@ -408,13 +511,16 @@ class RagRuntime:
     ) -> None:
         channel = await self.events.get(f"run:{run_id}")
         request_started_ms = committed_ms
+        dispatch_delay_ms = time.perf_counter() * 1000 - committed_ms
         await channel.publish(
             {
                 "type": "run.started",
                 "run_id": run_id,
                 "turn_id": turn_id,
+                "revision": request.revision,
                 "requested_path": self.path.name,
                 "execution_mode": "isolated_path",
+                "actor": "answer_pipeline",
             }
         )
         try:
@@ -426,6 +532,7 @@ class RagRuntime:
                 request_started_ms,
                 turn,
                 channel.publish,
+                dispatch_delay_ms,
             )
             await channel.publish({"type": "run.completed", "run_id": run_id})
         except Exception as exc:
@@ -461,18 +568,30 @@ class RagRuntime:
         request_started_ms,
         turn,
         send,
+        dispatch_delay_ms=0.0,
     ) -> None:
         snapshot = InputSnapshot(
             turn_id=turn_id,
             revision=request.revision,
             text=request.text,
         )
-        retrieval = await self.path.commit(
-            snapshot=snapshot,
-            session_id=request.session_id,
-            committed_ms=committed_ms,
-            turn=turn,
-        )
+        try:
+            retrieval = await self.path.commit(
+                snapshot=snapshot,
+                session_id=request.session_id,
+                committed_ms=committed_ms,
+                turn=turn,
+            )
+        except Exception as exc:
+            await self._write_retrieval_failure(
+                run_id=run_id,
+                turn_id=turn_id,
+                request=request,
+                committed_ms=committed_ms,
+                turn=turn,
+                error=exc,
+            )
+            raise
         await self._answer(
             run_id=run_id,
             turn_id=turn_id,
@@ -482,7 +601,88 @@ class RagRuntime:
             committed_ms=committed_ms,
             request_started_ms=request_started_ms,
             send=send,
+            dispatch_delay_ms=dispatch_delay_ms,
         )
+
+    async def _write_retrieval_failure(
+        self,
+        *,
+        run_id: str,
+        turn_id: str,
+        request: CommitRequest,
+        committed_ms: float,
+        turn: PathTurn | None,
+        error: Exception,
+    ) -> None:
+        """Durable record for a run that died before any answer work began.
+
+        Committed-text retrieval timeouts/failures previously produced only a
+        run.error event and a counter; the JSONL then silently omitted them.
+        """
+        failed_ms = time.perf_counter() * 1000
+        metrics = getattr(turn, "metrics", None)
+        usage = Usage()
+        controller_usage = getattr(metrics, "trigger_usage", None)
+        if controller_usage is not None:
+            usage.add(controller_usage)
+        record = {
+            "schema_version": 3,
+            "status": "failed",
+            "run_id": run_id,
+            "turn_id": turn_id,
+            "session_id": request.session_id,
+            "path": self.path.name,
+            "question": request.text,
+            "query_time": request.query_time,
+            "answer": "",
+            "sources": [],
+            "grounding": {"status": "not_evaluated_incomplete_answer"},
+            "commit": {
+                "branch": getattr(metrics, "commit_branch", None),
+                "fallback_reason": getattr(metrics, "fallback_reason", None),
+                "state_at_commit": getattr(metrics, "state_at_commit", None),
+                "inflight_wait": getattr(metrics, "inflight_wait", None),
+            },
+            "retrieval_attempts": _offset_attempts(
+                list(getattr(metrics, "retrieval_attempts", []) or []), committed_ms
+            ),
+            "debug_timeline": _offset_timeline(
+                list(getattr(metrics, "timeline", []) or []), committed_ms
+            ),
+            "debug_timeline_dropped": getattr(metrics, "timeline_dropped", 0),
+            "error": {
+                "stage": "retrieval",
+                "type": type(error).__name__,
+                "message": str(error) or "committed-text retrieval failed",
+            },
+            "timing": {
+                "elapsed_to_failure_ms": failed_ms - committed_ms,
+            },
+            "controller": {
+                "calls": getattr(metrics, "trigger_calls", 0),
+                "timeouts": getattr(metrics, "trigger_timeouts", 0),
+                "failures": getattr(metrics, "controller_failures", 0),
+            },
+            "retrieval": {
+                "calls": getattr(metrics, "retrieval_calls", 0),
+                "timeouts": getattr(metrics, "retrieval_timeouts", 0),
+                "failures": getattr(metrics, "retrieval_failures", 0),
+            },
+            "persistence": {
+                "status": "not_started",
+                "context_compaction": {"status": "unknown"},
+            },
+            "usage": asdict(usage),
+            "estimated_cost_usd": {
+                "model": model_cost(usage, self.settings).total_usd,
+                "accounting_complete": False,
+                "known_cost_lower_bound": True,
+            },
+        }
+        try:
+            await self.logger.write(record)
+        except Exception:
+            logger.exception("failed to persist retrieval-stage failure record")
 
     async def _answer(
         self,
@@ -495,6 +695,7 @@ class RagRuntime:
         committed_ms: float,
         request_started_ms: float,
         send,
+        dispatch_delay_ms: float = 0.0,
     ) -> None:
         sources = self._sources(retrieval.result)
         accepted_lead_ms = max(0.0, committed_ms - retrieval.retrieval_ready_ms)
@@ -522,6 +723,9 @@ class RagRuntime:
                 "turn_id": turn_id,
                 "path": path,
                 "sources": sources,
+                "accepted_query": retrieval.accepted_query or retrieval.result.query,
+                "evidence_origin": retrieval.evidence_origin,
+                "actor": "answer_pipeline",
             }
         )
         first_token_ms = None
@@ -535,18 +739,22 @@ class RagRuntime:
         compression_calls: int | None = None
         summary_accounting_complete = False
         unpriced_summary_timeout_calls = 0
+        stage_timing: dict = {}
+        context_compaction: dict = {"status": "unknown"}
+        grounding: dict | None = None
         generation_started_ms = time.perf_counter() * 1000
         answer_completed_ms: float | None = None
         persistence_started_ms: float | None = None
         persistence_completed_ms: float | None = None
         persistence_status = "not_started"
+        evidence = evidence_payload(
+            retrieval.result.hits,
+            self.settings.context_token_budget,
+        )
         event_stream = self.agent.stream(
             session_key=f"{request.session_id}:{path}",
             question=request.text,
-            evidence=evidence_block(
-                retrieval.result.hits,
-                self.settings.context_token_budget,
-            ),
+            evidence=evidence.text,
             query_time=request.query_time,
             cache_scope=cache_scope(request.session_id, path),
         )
@@ -580,7 +788,7 @@ class RagRuntime:
             )
             await self.logger.write(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "status": "failed",
                     "run_id": run_id,
                     "turn_id": turn_id,
@@ -590,6 +798,18 @@ class RagRuntime:
                     "query_time": request.query_time,
                     "answer": answer,
                     "sources": sources,
+                    "grounding": grounding or {"status": "not_evaluated_incomplete_answer"},
+                    "commit": {
+                        "branch": retrieval.commit_branch,
+                        "fallback_reason": retrieval.fallback_reason,
+                        "state_at_commit": retrieval.state_at_commit,
+                        "inflight_wait": retrieval.inflight_wait,
+                    },
+                    "retrieval_attempts": _offset_attempts(
+                        retrieval.retrieval_attempts, committed_ms
+                    ),
+                    "debug_timeline": _offset_timeline(retrieval.timeline, committed_ms),
+                    "debug_timeline_dropped": retrieval.timeline_dropped,
                     "error": {
                         "stage": "generation",
                         "type": error_type,
@@ -601,6 +821,10 @@ class RagRuntime:
                         ),
                         "elapsed_to_failure_ms": failed_ms - committed_ms,
                         "queue_before_path_ms": committed_ms - request_started_ms,
+                        "commit_dispatch_delay_ms": dispatch_delay_ms,
+                        "session_lease_wait_ms": stage_timing.get("session_lease_wait_ms"),
+                        "memory_load_ms": stage_timing.get("memory_load_ms"),
+                        "history_message_count": stage_timing.get("history_message_count"),
                         "retrieval_ms": retrieval.result.elapsed_ms,
                         "query_vector_ms": retrieval.result.query_vector_ms,
                         "ann_ms": retrieval.result.ann_ms,
@@ -610,10 +834,14 @@ class RagRuntime:
                     },
                     "retrieval": {
                         "query": retrieval.result.query,
+                        "accepted_query": retrieval.accepted_query or retrieval.result.query,
+                        "evidence_origin": retrieval.evidence_origin,
                         "embedding_tokens": retrieval_embedding_tokens,
                         "accepted_embedding_tokens": retrieval.result.embedding_tokens,
                         "cache_scope": retrieval.result.cache_scope,
                         "cache_hit": retrieval.result.cache_hit,
+                        "query_vector_cache_hit": retrieval.result.query_vector_cache_hit,
+                        "search_cache_age_ms": retrieval.result.search_cache_age_ms,
                         "calls": retrieval.retrieval_calls,
                         "timeouts": retrieval.retrieval_timeouts,
                         "failures": retrieval.retrieval_failures,
@@ -639,6 +867,7 @@ class RagRuntime:
                         "elapsed_ms": None,
                         "compression_calls": None,
                         "summary_accounting_complete": None,
+                        "context_compaction": {"status": "unknown"},
                     },
                     "tool_traces": tool_traces,
                     "usage": asdict(known_usage),
@@ -686,7 +915,14 @@ class RagRuntime:
                             answer = event["answer"]
                             agent_usage = event["usage"]
                             tool_traces = event.get("tool_traces", [])
+                            stage_timing = event.get("stage_timing") or {}
                             answer_completed_ms = time.perf_counter() * 1000
+                            grounding = grounding_facts(
+                                answer,
+                                evidence,
+                                tool_traces,
+                                event.get("history_chunk_markers"),
+                            )
                             sources = self._merge_tool_sources(sources, tool_traces)
                             tool_embedding_tokens = sum(
                                 int(trace.get("embedding_tokens") or 0) for trace in tool_traces
@@ -713,6 +949,8 @@ class RagRuntime:
                                     "path": path,
                                     "answer": answer,
                                     "sources": sources,
+                                    "grounding": grounding,
+                                    "actor": "answer_pipeline",
                                     "timing": {
                                         "submit_to_first_token_ms": (
                                             first_token_ms - committed_ms
@@ -799,6 +1037,9 @@ class RagRuntime:
                             unpriced_summary_timeout_calls = int(
                                 event.get("unpriced_summary_timeout_calls") or 0
                             )
+                            context_compaction = (
+                                event.get("context_compaction") or context_compaction
+                            )
                             persistence_status = "completed"
                         else:
                             raise RuntimeError(
@@ -848,12 +1089,21 @@ class RagRuntime:
             and persistence_status == "completed"
             and summary_accounting_complete
         )
+        if (
+            persistence_status in ("failed", "timeout")
+            and context_compaction.get("status") == "unknown"
+        ):
+            context_compaction = {"status": f"persistence_{persistence_status}"}
         timing = {
             "submit_to_first_token_ms": (
                 first_token_ms - committed_ms if first_token_ms is not None else None
             ),
             "total_response_ms": answer_completed_ms - committed_ms,
             "queue_before_path_ms": committed_ms - request_started_ms,
+            "commit_dispatch_delay_ms": dispatch_delay_ms,
+            "session_lease_wait_ms": stage_timing.get("session_lease_wait_ms"),
+            "memory_load_ms": stage_timing.get("memory_load_ms"),
+            "history_message_count": stage_timing.get("history_message_count"),
             "retrieval_ms": retrieval.result.elapsed_ms,
             "query_vector_ms": retrieval.result.query_vector_ms,
             "ann_ms": retrieval.result.ann_ms,
@@ -876,7 +1126,7 @@ class RagRuntime:
             "local_tool_wall_ms": tool_wall_ms,
         }
         record = {
-            "schema_version": 2,
+            "schema_version": 3,
             "run_id": run_id,
             "turn_id": turn_id,
             "session_id": request.session_id,
@@ -885,13 +1135,27 @@ class RagRuntime:
             "query_time": request.query_time,
             "answer": answer,
             "sources": sources,
+            "grounding": grounding,
+            "commit": {
+                "branch": retrieval.commit_branch,
+                "fallback_reason": retrieval.fallback_reason,
+                "state_at_commit": retrieval.state_at_commit,
+                "inflight_wait": retrieval.inflight_wait,
+            },
+            "retrieval_attempts": _offset_attempts(retrieval.retrieval_attempts, committed_ms),
+            "debug_timeline": _offset_timeline(retrieval.timeline, committed_ms),
+            "debug_timeline_dropped": retrieval.timeline_dropped,
             "timing": timing,
             "retrieval": {
                 "query": retrieval.result.query,
+                "accepted_query": retrieval.accepted_query or retrieval.result.query,
+                "evidence_origin": retrieval.evidence_origin,
                 "embedding_tokens": retrieval_embedding_tokens,
                 "accepted_embedding_tokens": retrieval.result.embedding_tokens,
                 "cache_scope": retrieval.result.cache_scope,
                 "cache_hit": retrieval.result.cache_hit,
+                "query_vector_cache_hit": retrieval.result.query_vector_cache_hit,
+                "search_cache_age_ms": retrieval.result.search_cache_age_ms,
                 "query_vector_ms": retrieval.result.query_vector_ms,
                 "ann_ms": retrieval.result.ann_ms,
                 "all_query_vector_ms": retrieval.retrieval_query_vector_ms,
@@ -931,6 +1195,7 @@ class RagRuntime:
                 "compression_calls": compression_calls,
                 "summary_accounting_complete": summary_accounting_complete,
                 "unpriced_summary_timeout_calls": unpriced_summary_timeout_calls,
+                "context_compaction": context_compaction,
             },
             "tool_traces": tool_traces,
             "usage": asdict(usage),
@@ -960,6 +1225,8 @@ class RagRuntime:
                 "path": path,
                 "answer": answer,
                 "sources": sources,
+                "grounding": grounding,
+                "commit": record["commit"],
                 "timing": timing,
                 "retrieval": record["retrieval"],
                 "controller": record["controller"],
@@ -968,6 +1235,7 @@ class RagRuntime:
                 "tool_traces": tool_traces,
                 "usage": record["usage"],
                 "estimated_cost_usd": record["estimated_cost_usd"],
+                "actor": "answer_pipeline",
             }
         )
 

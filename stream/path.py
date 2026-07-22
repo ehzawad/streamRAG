@@ -113,6 +113,15 @@ class StreamRagPath:
             accepted_speculative_completed_ms=metrics.accepted_retrieval_completed_ms,
             commit_gate_ms=commit_gate_ms,
             reuse_mode=reuse_mode(metrics, committed_ms),
+            commit_branch=metrics.commit_branch or "fallback",
+            fallback_reason=metrics.fallback_reason,
+            state_at_commit=metrics.state_at_commit,
+            inflight_wait=metrics.inflight_wait,
+            retrieval_attempts=list(metrics.retrieval_attempts),
+            timeline=list(metrics.timeline),
+            timeline_dropped=metrics.timeline_dropped,
+            evidence_origin=metrics.accepted_origin,
+            accepted_query=metrics.accepted_query,
         )
 
     async def close(self) -> None:

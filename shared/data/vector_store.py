@@ -310,7 +310,7 @@ class QdrantVectorStore:
             raise ValueError("cache scope is empty")
         return normalized
 
-    async def _query_vector(self, query: str, cache_scope: str) -> tuple[np.ndarray, int]:
+    async def _query_vector(self, query: str, cache_scope: str) -> tuple[np.ndarray, int, bool]:
         key = (
             cache_scope,
             f"{self.embedder.model}\0{self._normalize_query(query)}",
@@ -319,7 +319,7 @@ class QdrantVectorStore:
             cached = self._query_cache.get(key)
             if cached is not None:
                 self._query_cache.move_to_end(key)
-                return cached.copy(), 0
+                return cached.copy(), 0, True
         matrix, tokens = await self.embedder.embed([query])
         vector = matrix[0]
         async with self._cache_lock:
@@ -327,7 +327,7 @@ class QdrantVectorStore:
             self._query_cache.move_to_end(key)
             while len(self._query_cache) > self.settings.query_cache_size:
                 self._query_cache.popitem(last=False)
-        return vector, tokens
+        return vector, tokens, False
 
     async def _current_index_version(self) -> int:
         if self._index_version is not None:
@@ -371,9 +371,10 @@ class QdrantVectorStore:
                         elapsed_ms=(time.perf_counter() - started) * 1000,
                         cache_scope=cache_scope,
                         cache_hit=True,
+                        search_cache_age_ms=(now - cached[0]) * 1000,
                     )
         query_vector_started = time.perf_counter()
-        vector, tokens = await self._query_vector(query, cache_scope)
+        vector, tokens, vector_cache_hit = await self._query_vector(query, cache_scope)
         query_vector_ms = (time.perf_counter() - query_vector_started) * 1000
         ann_started = time.perf_counter()
         response = await self._client_call(
@@ -414,6 +415,7 @@ class QdrantVectorStore:
             cache_hit=False,
             query_vector_ms=query_vector_ms,
             ann_ms=ann_ms,
+            query_vector_cache_hit=vector_cache_hit,
         )
         async with self._version_lock:
             if not self._index_ready or self._index_version != version:
